@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""pr-radar — a maintainer's review queue: every open PR that needs you now.
+
+Scans ALL open PRs (not a time window) and buckets them by what action YOU owe:
+
+  1. RE-REVIEW          you reviewed it, the author pushed commits since.
+  2. DISCUSS            you engaged, no new commits, but someone commented or
+                        reviewed AFTER your last activity (author replied, or
+                        another reviewer weighed in) — the ball may be yours.
+  3. RESPOND (my PRs)   your PR got review/comments after your last push.
+  4. NEVER REVIEWED     open PR (by others) with no human review yet.
+  5. STALLED            someone else reviewed, author pushed changes, and
+                        nobody has followed up in > --stale-hours (default 24).
+                        e.g. Chris reviewed Max, Max pushed, it's been sitting.
+  6. UNSEEN BY YOU      others engaged but you never did (informational).
+  7. WAITING ON AUTHOR  (informational) you truly acted last; ball is theirs.
+
+Bot accounts (dependabot, github-actions, release bots, CodeQL) are ignored as
+"reviewers/commenters" and bot-authored PRs are skipped, unless --include-bots.
+
+Usage:
+    pr-radar                       # full maintainer queue, 24h staleness
+    pr-radar --stale-hours 48      # only flag things stuck > 48h
+    pr-radar --repo owner/name --me login
+    pr-radar --include-drafts      # include drafts (your own always included)
+    pr-radar --include-bots        # include bot-authored PRs + bot events
+
+Requires: gh (authenticated), python3. No third-party packages.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+# ── ANSI (suppressed when piped) ──────────────────────────────────────────────
+_TTY = sys.stdout.isatty()
+
+
+def _c(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if _TTY else s
+
+
+def bold(s):  # noqa: E704
+    return _c("1", s)
+
+
+def red(s):  # noqa: E704
+    return _c("31", s)
+
+
+def yellow(s):  # noqa: E704
+    return _c("33", s)
+
+
+def orange(s):  # noqa: E704
+    return _c("33", s)
+
+
+def green(s):  # noqa: E704
+    return _c("32", s)
+
+
+def dim(s):  # noqa: E704
+    return _c("2", s)
+
+
+# ── gh plumbing ───────────────────────────────────────────────────────────────
+def gh(args: list[str]) -> str:
+    res = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if res.returncode != 0:
+        sys.exit(f"gh {' '.join(args)} failed:\n{res.stderr.strip()}")
+    return res.stdout
+
+
+def gh_json(args: list[str]):
+    out = gh(args).strip()
+    return json.loads(out) if out else None
+
+
+def api(path: str):
+    sep = "&" if "?" in path else "?"
+    return gh_json(["api", f"{path}{sep}per_page=100"]) or []
+
+
+def parse_ts(ts: str | None) -> datetime | None:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
+
+
+def short(s: str, n: int = 72) -> str:
+    s = " ".join((s or "").split())
+    return s[: n - 1] + "…" if len(s) > n else s
+
+
+def is_bot(login: str | None) -> bool:
+    if not login:
+        return False
+    low = login.lower()
+    return (
+        login.endswith("[bot]")
+        or low.startswith("app/")
+        or low in {"github-actions", "dependabot", "codecov", "coderabbitai"}
+    )
+
+
+def hrs_ago(dt: datetime, now: datetime) -> str:
+    h = (now - dt).total_seconds() / 3600
+    return f"{h/24:.1f}d" if h >= 48 else f"{h:.0f}h"
+
+
+# ── per-PR timeline ───────────────────────────────────────────────────────────
+def timeline(repo: str, pr: dict, me: str, include_bots: bool):
+    """Fetch commits + reviews + comments and reduce to the facts we bucket on."""
+    num = pr["number"]
+    author = pr["author"]["login"]
+
+    cs = []
+    for c in api(f"repos/{repo}/pulls/{num}/commits"):
+        cs.append(
+            {
+                "dt": parse_ts(c["commit"]["committer"]["date"]),
+                "login": (c.get("author") or {}).get("login"),
+                "msg": c["commit"]["message"].splitlines()[0],
+            }
+        )
+    cs.sort(key=lambda x: x["dt"])
+
+    # human events = issue comments + submitted reviews (inline review comments
+    # collapse into their review, so reviews cover them)
+    events = []  # (dt, login, kind, state)
+    for c in api(f"repos/{repo}/issues/{num}/comments"):
+        lg = c["user"]["login"]
+        if include_bots or not is_bot(lg):
+            events.append((parse_ts(c["created_at"]), lg, "comment", None))
+    my_review_state = None
+    my_review_dt = None
+    for r in api(f"repos/{repo}/pulls/{num}/reviews"):
+        if not r.get("submitted_at"):
+            continue
+        lg = r["user"]["login"]
+        if not (include_bots or not is_bot(lg)):
+            continue
+        dt = parse_ts(r["submitted_at"])
+        events.append((dt, lg, "review", r["state"]))
+        if lg == me and (my_review_dt is None or dt > my_review_dt):
+            my_review_dt, my_review_state = dt, r["state"]
+    events.sort(key=lambda x: x[0])
+
+    my_events = [e for e in events if e[1] == me]
+    other_events = [e for e in events if e[1] != me]
+    other_reviews = [e for e in other_events if e[2] == "review"]
+
+    return {
+        "num": num,
+        "title": pr["title"],
+        "author": author,
+        "draft": pr["isDraft"],
+        "mergeable": pr.get("mergeable"),
+        "review_requested_from_me": any(
+            (rr.get("login") == me)
+            for rr in (pr.get("reviewRequests") or [])
+        ),
+        "commits": cs,
+        "last_commit": cs[-1] if cs else None,
+        "my_last": (my_events[-1][0] if my_events else None),
+        "my_review_state": my_review_state,
+        "events": events,
+        "other_events": other_events,
+        "other_reviews": other_reviews,
+    }
+
+
+def merge_flag(m):
+    if m == "CONFLICTING":
+        return red(" [conflict]")
+    if m == "UNKNOWN":
+        return dim(" [merge?]")
+    return ""
+
+
+# ── bucketing ─────────────────────────────────────────────────────────────────
+def categorize(t: dict, me: str, now: datetime, stale_hours: float, include_drafts: bool):
+    author = t["author"]
+    last_commit = t["last_commit"]
+
+    # ---- my own PRs: did anyone give feedback after my last push? ----
+    if author == me:
+        my_push = max(
+            (c["dt"] for c in t["commits"] if c["login"] == me),
+            default=(last_commit["dt"] if last_commit else None),
+        )
+        if my_push is None:
+            return None
+        fb = [e for e in t["other_events"] if e[0] > my_push]
+        return ("respond", fb) if fb else None
+
+    if t["draft"] and not include_drafts:
+        return None
+
+    # ---- I have engaged ----
+    if t["my_last"] is not None:
+        if last_commit and last_commit["dt"] > t["my_last"] and last_commit["login"] != me:
+            new = [c for c in t["commits"] if c["dt"] > t["my_last"] and c["login"] != me]
+            return ("rereview", new)
+        # No new commits — but did anyone comment/review after my last activity?
+        # (author replying without pushing, or another reviewer weighing in)
+        new_events = [e for e in t["other_events"] if e[0] > t["my_last"]]
+        if new_events:
+            return ("discuss", new_events)
+        return ("waiting", None)  # I truly acted last
+
+    # ---- I have never engaged ----
+    # "Reviewed by someone" = any human (non-bot) other than me or the author has
+    # commented or formally reviewed. In this repo reviews are often posted as
+    # plain issue comments, so a formal review submission is NOT required.
+    reviewers = [e for e in t["other_events"] if e[1] != author]
+    if not reviewers:
+        return ("never", None)  # truly unreviewed → first pass
+
+    # Someone else reviewed. Stalled? = author pushed after the last external look
+    # AND no reviewer (non-author human) has followed up since, for > stale_hours.
+    last_review_dt = max(e[0] for e in reviewers)
+    if last_commit and last_commit["dt"] > last_review_dt:
+        followup = [e for e in t["events"] if e[0] > last_commit["dt"] and e[1] != author]
+        age_h = (now - last_commit["dt"]).total_seconds() / 3600
+        if not followup and age_h > stale_hours:
+            return ("stalled", last_review_dt)
+    # Others engaged, I never did, not stalled — surface instead of hiding.
+    return ("unseen", reviewers)
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+def main():
+    ap = argparse.ArgumentParser(description="Maintainer review queue.")
+    ap.add_argument("--repo", help="owner/name (default: current repo)")
+    ap.add_argument("--me", help="your login (default: gh api user)")
+    ap.add_argument("--stale-hours", type=float, default=24,
+                    help="flag reviewed+pushed PRs idle longer than this (default 24)")
+    ap.add_argument("--include-drafts", action="store_true")
+    ap.add_argument("--include-bots", action="store_true")
+    args = ap.parse_args()
+
+    me = args.me or gh_json(["api", "user"])["login"]
+    repo = args.repo or gh_json(["repo", "view", "--json", "nameWithOwner"])["nameWithOwner"]
+    now = datetime.now(timezone.utc)
+    print(dim(f"repo={repo}  me={me}  stale>{args.stale_hours:g}h"))
+
+    prs = gh_json([
+        "pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
+        "--json", "number,title,author,isDraft,mergeable,reviewRequests",
+    ]) or []
+    if not args.include_bots:
+        prs = [p for p in prs if not is_bot(p["author"]["login"])]
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        tls = list(ex.map(lambda p: timeline(repo, p, me, args.include_bots), prs))
+
+    buckets: dict[str, list] = {k: [] for k in
+                               ("rereview", "discuss", "respond", "never",
+                                "stalled", "unseen", "waiting")}
+    for t in tls:
+        res = categorize(t, me, now, args.stale_hours, args.include_drafts)
+        if res:
+            buckets[res[0]].append((t, res[1]))
+
+    def line(t, extra=""):
+        return (f"  #{t['num']} [{t['author']}] {short(t['title'])}"
+                + merge_flag(t["mergeable"]) + extra)
+
+    n = 0
+
+    if buckets["rereview"]:
+        print(bold(red("\n━━━ 🔴 RE-REVIEW — you reviewed, author pushed since ━━━")))
+        for t, new in sorted(buckets["rereview"], key=lambda x: -len(x[1])):
+            urgent = t["my_review_state"] == "CHANGES_REQUESTED"
+            tag = red("  ⚠ your CHANGES_REQUESTED still standing") if urgent else ""
+            print(line(t, tag))
+            print(dim(f"      you: {t['my_last']:%m-%d %H:%M}Z  ·  {len(new)} new commit(s), "
+                      f"latest {new[-1]['dt']:%m-%d %H:%M} ({hrs_ago(new[-1]['dt'], now)} ago)"))
+            n += 1
+
+    if buckets["discuss"]:
+        print(bold(red("\n━━━ 🔴 DISCUSS — new comments after your last activity, no new commits ━━━")))
+        for t, ev in sorted(buckets["discuss"], key=lambda x: x[1][-1][0], reverse=True):
+            who = ", ".join(sorted({e[1] for e in ev}))
+            print(line(t, f"  ({len(ev)} from {who})"))
+            print(dim(f"      you: {t['my_last']:%m-%d %H:%M}Z  ·  latest "
+                      f"{ev[-1][0]:%m-%d %H:%M} ({hrs_ago(ev[-1][0], now)} ago)"))
+            n += 1
+
+    if buckets["respond"]:
+        print(bold(red("\n━━━ 🔴 RESPOND — your PR got feedback after your push ━━━")))
+        for t, fb in buckets["respond"]:
+            who = ", ".join(sorted({e[1] for e in fb}))
+            states = ", ".join(sorted({e[3] for e in fb if e[3]}))
+            print(line(t, f"  ({len(fb)} from {who}{(' · ' + states) if states else ''})"))
+            n += 1
+
+    if buckets["never"]:
+        print(bold(orange("\n━━━ 🟠 NEVER REVIEWED — needs a first pass ━━━")))
+        for t, _ in buckets["never"]:
+            star = green("  ★ review requested from you") if t["review_requested_from_me"] else ""
+            print(line(t, star))
+            n += 1
+
+    if buckets["stalled"]:
+        print(bold(orange(f"\n━━━ 🟠 STALLED — reviewed, author pushed, idle >{args.stale_hours:g}h ━━━")))
+        for t, last_review_dt in sorted(buckets["stalled"], key=lambda x: x[0]["last_commit"]["dt"]):
+            lc = t["last_commit"]
+            print(line(t, dim(f"   last push {hrs_ago(lc['dt'], now)} ago, no follow-up")))
+            n += 1
+
+    if buckets["unseen"]:
+        print(bold(dim("\n━━━ ⚪ UNSEEN BY YOU — others engaged, you never did (info) ━━━")))
+        for t, reviewers in sorted(buckets["unseen"],
+                                   key=lambda x: max(e[0] for e in x[1]), reverse=True):
+            who = ", ".join(sorted({e[1] for e in reviewers}))
+            last = max(e[0] for e in reviewers)
+            print(dim(line(t, f"   ({who}, latest {last:%m-%d %H:%M}Z)")))
+
+    if buckets["waiting"]:
+        print(bold(dim("\n━━━ ⚪ WAITING ON AUTHOR — you commented last (info) ━━━")))
+        for t, _ in sorted(buckets["waiting"], key=lambda x: x[0]["my_last"], reverse=True):
+            print(dim(line(t, f"   (you: {t['my_last']:%m-%d %H:%M}Z)")))
+
+    print(("\n" + bold(f"{n} PR(s) need your action.")) if n else
+          green("\n✓ nothing needs your action right now."))
+
+
+if __name__ == "__main__":
+    main()

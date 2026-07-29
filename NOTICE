@@ -1,0 +1,36 @@
+salesagent-review-bot
+======================
+
+This project merges and adapts two upstream, permissively-licensed tools. Their
+files are incorporated here with modifications tracked in this repo's git history.
+Full upstream license texts are in `licenses/`.
+
+--------------------------------------------------------------------------------
+1. prebid-salesagent-pr-review
+   Author:   Konstantin Mirin
+   Copyright (c) 2026 Prebid Sales Agent PR Review
+   License:  MIT  (see licenses/LICENSE-konstantin-MIT.txt)
+   Source:   https://github.com/KonstantinMirin/prebid-salesagent-pr-review
+
+   Incorporated here:
+     - bin/*                                  (the pipeline drivers: pr-review-queue,
+                                               pr-radar, pr-review-artifact)
+     - claude/skills/review-queue/SKILL.md    (the orchestrator skill)
+     - claude/skills/review-queue/references/ (review-policy, review-voice, synthesis)
+   Adapted for cross-platform use and integration with the detector substrate below.
+
+--------------------------------------------------------------------------------
+2. salesagent-review-harness
+   Author:   Chris Huie
+   License:  Apache License 2.0  (see licenses/LICENSE-chris-Apache-2.0.txt)
+   Source:   https://github.com/ChrisHuie/salesagent-review-harness
+
+   Incorporated here:
+     - claude/rules/charter/*     (review-charter.md, reviewer-tooling.md)
+     - claude/rules/detectors/*   (the 10 mechanized, self-testing detectors)
+     - claude/rules/corpus/*      (the P1-P42 pattern catalog + reference corpus)
+   Modified where noted to run inside the merged pipeline.
+
+--------------------------------------------------------------------------------
+The canonical review agents in claude/agents/ are an original synthesis (union +
+dedup) of the two upstream agent sets; see docs/merge-design.md for the mapping.

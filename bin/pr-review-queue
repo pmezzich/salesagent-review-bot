@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+#
+# pr-review-queue — Layer 1 (scout/setup) + Layer 3 (post) for the automated
+# PR-review pipeline. Layer 2 (the 8-agent fan-out + synthesis) is driven by the
+# pr-review-queue skill, which consumes the manifest this script emits.
+#
+# WORKTREES: Checkouts use sibling worktrees <WT_BASE>/<repo>-pr<NNNN> (WT_BASE is
+# configurable — PR_REVIEW_WT_BASE or the install config; defaults to ~/projects)
+# (branch pr-<NNNN>-review). They are DISPOSABLE: each `manifest` run brings the
+# tree to the exact PR head the diff was built from ($fetched) — fast-forward on a
+# lag, hard-reset on a divergence (old HEAD recoverable via reflog). The review
+# agents grep this tree, so worktree ≡ diff scope must hold as one snapshot; Layer 2
+# must NOT re-fetch, or the tree would drift newer than the diff it grades.
+#
+# Subcommands:
+#   manifest [PR...]     Prepare review inputs and print a JSON manifest to stdout.
+#                        With no PR args, pulls candidates from pr-radar's
+#                        STALLED (reviewed, author pushed) + UNSEEN-BY-YOU
+#                        (never engaged) buckets. PRs GitHub reports as
+#                        CONFLICTING are skipped with a printed notice — their
+#                        three-dot diff will shift once the author rebases, so
+#                        reviewing them now wastes a pass. Override with
+#                        PR_REVIEW_INCLUDE_CONFLICTING=1.
+#   post <PR> [--preview] [--dir D]
+#                        Post the approved review for a PR (Layer 3): body +
+#                        inline comments if REVIEW-INLINE.json has anchors, else a
+#                        top-level comment. --preview shows the payload, posts nothing.
+#   hydrate <PR>         Print a paste-ready prompt to load a PR's review context
+#                        into a fresh session (e.g. one you open in the worktree).
+#   artifact [DIR]       Deterministically assemble the run into ONE local HTML
+#                        file for reading (delegates to pr-review-artifact).
+#                        Defaults to the newest run. Pass --open to open it.
+#   clean                Remove driver-owned checkouts and prune worktrees.
+#
+# Requires: gh (authenticated), git, python3, jq.
+
+set -euo pipefail
+
+# Repo-agnostic: operate on whatever repo the cwd belongs to. Nothing here is
+# written into that repo's tree — worktrees live in WT_BASE and all review
+# outputs live in BASE_DIR, both OUTSIDE the target repo, so this tool leaves no
+# footprint in the project it reviews.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pr-review-queue: not inside a git repo" >&2; exit 1; }
+REPO="${PR_REVIEW_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)}"
+[ -n "${REPO:-}" ] || { echo "pr-review-queue: cannot determine repo (set PR_REVIEW_REPO=owner/name)" >&2; exit 1; }
+REPO_URL="https://github.com/${REPO}.git"
+REPO_SLUG="${REPO//\//-}"
+# Outputs live under XDG state, keyed by repo — never in the target tree.
+BASE_DIR="${PR_REVIEW_HOME:-${XDG_STATE_HOME:-${HOME}/.local/state}/pr-review-queue}/${REPO_SLUG}"
+# Checkouts live in sibling worktrees named <repo-dir>-pr<NNNN> on branch
+# pr-<NNNN>-review. They are disposable: `manifest` resets each to the PR head the
+# diff was built from so the agents grep the code they actually review.
+# Optional config (written by install.sh) sets PR_REVIEW_WT_BASE when it is not
+# already in the environment; an explicit env var always wins.
+PR_REVIEW_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/pr-review-queue/config"
+[ -f "$PR_REVIEW_CFG" ] && . "$PR_REVIEW_CFG"
+WT_BASE="${PR_REVIEW_WT_BASE:-${HOME}/projects}"
+WT_PREFIX="$(basename "$ROOT")-pr"
+
+log() { printf '  %s\n' "$*" >&2; }
+die() { printf 'pr-review-queue: %s\n' "$*" >&2; exit 1; }
+
+# ── candidate discovery ───────────────────────────────────────────────────────
+# Parse pr-radar's plain-text (ANSI-stripped when piped) actionable buckets into a
+# list of PR numbers. pr-radar buckets every open PR by the action YOU owe; we grab
+# the four where there is someone else's DIFF to review:
+#   RE-REVIEW      — you reviewed, the author has pushed commits since (re-review).
+#   NEVER REVIEWED — an open PR by others with no human review yet (first pass).
+#   STALLED        — someone else reviewed, author pushed, idle > staleness window.
+#   UNSEEN BY YOU  — others engaged, you never have (first look for you).
+# Deliberately excluded: DISCUSS (no new commits — a reply to weigh in on, not a
+# diff), RESPOND (your OWN PRs), WAITING ON AUTHOR (ball is in the author's court).
+# Header text is the only signal pr-radar exposes (no JSON mode); key on the stable
+# uppercase labels. NOTE: pr-radar was refactored to split the old catch-all STALLED
+# into RE-REVIEW (fresh push) + STALLED (idle) — if a new push stops surfacing here,
+# check that pr-radar's header labels still match these patterns. Bucket-header lines
+# also start with ━━━, but the grab rules run first and `next` past the /^━━━/
+# terminator, so a grabbed bucket ends only at the next header (grabbed or excluded).
+radar_candidates() {
+  local radar
+  radar="$(command -v pr-radar || echo "${HOME}/.local/bin/pr-radar")"
+  [ -x "$radar" ] || die "pr-radar not found (looked at $radar)"
+  "$radar" 2>/dev/null | awk '
+    /RE-REVIEW/            { grab=1; next }
+    /NEVER REVIEWED/       { grab=1; next }
+    /STALLED/              { grab=1; next }
+    /UNSEEN BY YOU/        { grab=1; next }
+    /^━━━/                 { grab=0 }
+    grab && match($0, /#[0-9]+/) { print substr($0, RSTART+1, RLENGTH-1) }
+  '
+}
+
+# ── mergeability gate ─────────────────────────────────────────────────────────
+# GitHub's `mergeable` is MERGEABLE | CONFLICTING | UNKNOWN. Skip only explicit
+# CONFLICTING: its review scope (base...head three-dot diff) will change once the
+# author resolves conflicts, so any findings would be against a diff that no longer
+# exists. UNKNOWN (not yet computed) and MERGEABLE both proceed. Never silent —
+# the skip reason is printed. Set PR_REVIEW_INCLUDE_CONFLICTING=1 to review anyway.
+pr_reviewable() {
+  local pr="$1"
+  [ "${PR_REVIEW_INCLUDE_CONFLICTING:-0}" = "1" ] && return 0
+  local m
+  m="$(gh pr view "$pr" --repo "$REPO" --json mergeable -q .mergeable 2>/dev/null)" || return 0
+  if [ "$m" = "CONFLICTING" ]; then
+    log "skip #${pr}: CONFLICTING — diff will shift on rebase (set PR_REVIEW_INCLUDE_CONFLICTING=1 to force)"
+    return 1
+  fi
+  return 0
+}
+
+# ── prior-comment capture ─────────────────────────────────────────────────────
+# Human review context the synthesis agent must weigh: issue comments, review
+# summaries, and inline review comments. Bots filtered out.
+capture_prior_comments() {
+  local pr="$1" out="$2"
+  {
+    echo "# Prior human review history for PR #${pr}"
+    echo
+    echo "## Review summaries (APPROVED / CHANGES_REQUESTED / COMMENTED)"
+    gh api "repos/${REPO}/pulls/${pr}/reviews" --paginate 2>/dev/null | jq -r '
+      .[] | select(.user.type != "Bot")
+      | "- [\(.state)] @\(.user.login) (\(.submitted_at // "?")):\n\((.body // "") | gsub("\n";"\n  ") | "  " + .)"
+    ' || true
+    echo
+    echo "## Inline review comments (file:line threads)"
+    gh api "repos/${REPO}/pulls/${pr}/comments" --paginate 2>/dev/null | jq -r '
+      .[] | select(.user.type != "Bot")
+      | "- @\(.user.login) on \(.path):\(.line // .original_line // "?"):\n  \((.body // "") | gsub("\n";"\n  "))"
+    ' || true
+    echo
+    echo "## Issue-level conversation comments"
+    gh api "repos/${REPO}/issues/${pr}/comments" --paginate 2>/dev/null | jq -r '
+      .[] | select(.user.type != "Bot")
+      | "- @\(.user.login) (\(.created_at)):\n  \((.body // "") | gsub("\n";"\n  "))"
+    ' || true
+  } > "$out"
+}
+
+# ── per-PR setup ──────────────────────────────────────────────────────────────
+prepare_pr() {
+  local pr="$1" run_dir="$2"
+  local dir="${run_dir}/pr${pr}"
+  mkdir -p "$dir"
+
+  local meta
+  meta="$(gh pr view "$pr" --repo "$REPO" \
+    --json number,title,url,headRefName,headRefOid,baseRefName,isCrossRepository,author \
+    2>/dev/null)" || die "PR #${pr}: gh pr view failed"
+  local head_sha title url base
+  head_sha="$(jq -r .headRefOid <<<"$meta")"
+  title="$(jq -r .title <<<"$meta")"
+  url="$(jq -r .url <<<"$meta")"
+  base="$(jq -r .baseRefName <<<"$meta")"
+
+  log "PR #${pr} — ${title}"
+
+  # Fetch the PR head and base locally. The review diff comes from git in the
+  # local checkout, NOT the GitHub API: `gh pr diff` 406s on diffs over 20k lines
+  # (large PRs would silently vanish from the manifest), and we already fetch the
+  # head to build the worktree — so git is the source of truth. `gh` is used only
+  # for data git can't provide (PR metadata, human review threads).
+  git -C "$ROOT" fetch -q "$REPO_URL" "pull/${pr}/head" || die "PR #${pr}: fetch pull head failed"
+  local fetched; fetched="$(git -C "$ROOT" rev-parse FETCH_HEAD)"
+  git -C "$ROOT" fetch -q "$REPO_URL" "$base" || die "PR #${pr}: fetch base '${base}' failed"
+  local base_sha; base_sha="$(git -C "$ROOT" rev-parse FETCH_HEAD)"
+
+  # Canonical author diff + changed files (base...head, three-dot = from the
+  # merge-base — same scope as `gh pr diff`, with no size ceiling).
+  git -C "$ROOT" diff "${base_sha}...${fetched}"             > "${dir}/pr.diff"           || die "PR #${pr}: git diff failed"
+  git -C "$ROOT" diff --name-only "${base_sha}...${fetched}" > "${dir}/changed-files.txt" || true
+
+  capture_prior_comments "$pr" "${dir}/prior-comments.md"
+
+  # Sibling worktree at ${WT_BASE}/<repo>-pr<NNNN> on branch pr-<NNNN>-review.
+  # Tree context for sibling greps only — scope is the local git diff above.
+  local checkout="${WT_BASE}/${WT_PREFIX}${pr}"
+  local branch="pr-${pr}-review"
+  if git -C "$ROOT" worktree list --porcelain | grep -qx "worktree ${checkout}"; then
+    # The review agents grep this LOCAL tree, so it must match the exact SHA the
+    # diff above was built from ($fetched) — worktree ≡ diff scope, one snapshot.
+    # These worktrees are disposable: bring the tree to the PR head. A plain lag
+    # fast-forwards; a divergence (local fix commits) hard-resets onto the head,
+    # with the old SHA logged so `git reflog` can recover it.
+    local wt_head; wt_head="$(git -C "$checkout" rev-parse HEAD)"
+    if [ "$wt_head" != "$fetched" ]; then
+      if ! git -C "$ROOT" merge-base --is-ancestor "$wt_head" "$fetched" 2>/dev/null; then
+        log "note: ${checkout} (HEAD ${wt_head:0:9}) diverges from PR head ${fetched:0:9}; hard-reset onto it (old HEAD recoverable via reflog)"
+      fi
+      git -C "$checkout" reset -q --hard "$fetched" || die "PR #${pr}: failed to reset ${checkout} to PR head ${fetched:0:9}"
+      log "worktree ${checkout} -> PR head ${fetched:0:9}"
+    fi
+  elif [ -e "$checkout" ]; then
+    die "PR #${pr}: ${checkout} exists but is not a git worktree; refusing to clobber"
+  else
+    # None yet — create it their way (branch pr-<NNNN>-review at the PR head).
+    if git -C "$ROOT" show-ref -q --verify "refs/heads/${branch}"; then
+      git -C "$ROOT" worktree add -q "$checkout" "$branch"
+    else
+      git -C "$ROOT" worktree add -q -b "$branch" "$checkout" "$fetched"
+    fi
+  fi
+
+  jq -n \
+    --arg pr "$pr" --arg title "$title" --arg url "$url" \
+    --arg base "$base" --arg head "$head_sha" \
+    --arg dir "$dir" --arg checkout "$checkout" \
+    '{pr:($pr|tonumber), title:$title, url:$url, base:$base, head:$head,
+      review_dir:$dir, checkout:$checkout,
+      diff:($dir+"/pr.diff"), changed_files:($dir+"/changed-files.txt"),
+      prior_comments:($dir+"/prior-comments.md"),
+      draft:($dir+"/DRAFT-COMMENT.md")}'
+}
+
+cmd_manifest() {
+  local -a prs=("$@")
+  if [ "${#prs[@]}" -eq 0 ]; then
+    mapfile -t prs < <(radar_candidates | sort -un)
+    [ "${#prs[@]}" -gt 0 ] || die "no candidates from pr-radar and no PRs given"
+    log "candidates from pr-radar: ${prs[*]}"
+  fi
+  local stamp run_dir
+  stamp="$(date +%d%m%y_%H%M)"
+  run_dir="${BASE_DIR}/queue/${stamp}"
+  mkdir -p "$run_dir"
+
+  local entries="[]" reviewed=0 skipped=""
+  for pr in "${prs[@]}"; do
+    pr_reviewable "$pr" || continue
+    # prepare_pr runs in a subshell; a `die` inside it exits only that subshell
+    # (empty stdout, non-zero status). Capture and check so a failed PR is skipped
+    # LOUDLY rather than silently dropped while the count marches on.
+    local entry; entry="$(prepare_pr "$pr" "$run_dir")"
+    if [ $? -ne 0 ] || [ -z "$entry" ]; then
+      log "skip #${pr}: preparation failed (see error above) — dropped from manifest"
+      skipped+=" ${pr}"
+      continue
+    fi
+    entries="$(jq -c --argjson e "$entry" '. += [$e]' <<<"$entries")"
+    reviewed=$((reviewed + 1))
+  done
+  [ -n "$skipped" ] && log "NOTE: skipped PRs (not in manifest):${skipped}"
+  [ "$reviewed" -gt 0 ] || die "no reviewable PRs (all candidates were CONFLICTING or failed preparation)"
+  jq -n --arg run "$run_dir" --argjson prs "$entries" '{run_dir:$run, prs:$prs}' \
+    | tee "${run_dir}/manifest.json"
+  log "manifest -> ${run_dir}/manifest.json (${reviewed} reviewable)"
+}
+
+# Post the approved review. If REVIEW-INLINE.json holds anchored comments, post ONE
+# GitHub review (event=COMMENT) = the DRAFT-COMMENT.md body + inline comments at the
+# cited diff lines. Otherwise post a plain top-level comment. Inline anchors are
+# validated against pr.diff first: a comment whose line is not an added/context line
+# in the diff is dropped with a warning (GitHub would 422 the whole review otherwise).
+# `--preview` prints exactly what would be posted without posting.
+cmd_post() {
+  local pr="$1"; shift || true
+  local dir="" preview=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --dir) dir="$2"; shift 2;;
+    --preview) preview=1; shift;;
+    *) shift;; esac; done
+  if [ -z "$dir" ]; then
+    dir="$(ls -dt "${BASE_DIR}/queue/"*/"pr${pr}" 2>/dev/null | head -1)"
+  fi
+  [ -n "$dir" ] || die "no review dir for PR #${pr} (pass --dir)"
+  local draft="${dir}/DRAFT-COMMENT.md" inline="${dir}/REVIEW-INLINE.json" diff="${dir}/pr.diff"
+  [ -s "$draft" ] || die "no DRAFT-COMMENT.md at ${draft}"
+
+  # No inline comments -> plain top-level review comment (legacy shape).
+  if [ ! -s "$inline" ] || [ "$(jq 'length' "$inline" 2>/dev/null || echo 0)" = "0" ]; then
+    if [ "$preview" = 1 ]; then log "[preview] top-level comment to PR #${pr}:"; cat "$draft"; return; fi
+    log "posting top-level review comment to PR #${pr}"
+    gh pr comment "$pr" --repo "$REPO" --body-file "$draft"
+    return
+  fi
+
+  # Inline path: keep only comments whose (path,line) is a '+'/context line in the diff.
+  local filtered
+  filtered="$(python3 - "$diff" "$inline" <<'PY'
+import json, re, sys
+diff_path, inline_path = sys.argv[1], sys.argv[2]
+valid, path, newln = set(), None, 0
+for line in open(diff_path, errors="replace"):
+    if line.startswith('+++ '):
+        p = line[4:].rstrip('\n')
+        path = p[2:] if p.startswith('b/') else (None if p == '/dev/null' else p)
+        continue
+    m = re.match(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+    if m:
+        newln = int(m.group(1)); continue
+    if path is None:
+        continue
+    if line.startswith('+'):
+        valid.add((path, newln)); newln += 1
+    elif line.startswith('-'):
+        pass
+    elif line.startswith(' '):
+        valid.add((path, newln)); newln += 1
+comments = json.load(open(inline_path))
+keep, drop = [], []
+for c in comments:
+    if (c.get('path'), c.get('line')) in valid:
+        keep.append({'path': c['path'], 'line': c['line'], 'side': 'RIGHT', 'body': c['body']})
+    else:
+        drop.append(c)
+for d in drop:
+    sys.stderr.write(f"  drop inline (line not in diff): {d.get('path')}:{d.get('line')}\n")
+json.dump(keep, sys.stdout)
+PY
+)"
+  local n payload
+  n="$(jq 'length' <<<"$filtered")"
+  payload="$(jq -n --arg body "$(cat "$draft")" --argjson comments "$filtered" \
+    '{event:"COMMENT", body:$body, comments:$comments}')"
+  if [ "$preview" = 1 ]; then
+    log "[preview] review to PR #${pr}: body + ${n} inline comment(s) at:"
+    jq -r '.comments[] | "    \(.path):\(.line)"' <<<"$payload" >&2
+    printf '%s\n' "$payload"
+    return
+  fi
+  log "posting review to PR #${pr}: body + ${n} inline comment(s)"
+  printf '%s' "$payload" | gh api "repos/${REPO}/pulls/${pr}/reviews" --method POST --input -
+}
+
+# Print a paste-ready hydration prompt so a fresh session (opened anywhere,
+# including inside the PR's sibling worktree) can pick up this PR's review with
+# full context. The review artifacts live in the MAIN repo under
+# .claude/code-review/queue/<stamp>/pr<NNNN>/ and are reachable by absolute path
+# from any cwd, so no copying into the worktree is needed. Prompt -> stdout
+# (pipe it: `claude "$(bin/pr-review-queue hydrate 1537)"`); status -> stderr.
+cmd_hydrate() {
+  local pr="$1"; shift || true
+  local dir=""
+  while [ $# -gt 0 ]; do case "$1" in --dir) dir="$2"; shift 2;; *) shift;; esac; done
+  if [ -z "$dir" ]; then
+    dir="$(ls -dt "${BASE_DIR}/queue/"*/"pr${pr}" 2>/dev/null | head -1)"
+  fi
+  [ -n "$dir" ] || die "no review dir for PR #${pr} (run 'manifest ${pr}' first, or pass --dir)"
+  local wt="${WT_BASE}/${WT_PREFIX}${pr}"
+  log "review dir: ${dir}"
+  [ -d "$wt" ] && log "worktree:   ${wt} (branch pr-${pr}-review, at PR head)"
+  cat <<EOF
+I'm continuing a multi-agent code review of PR #${pr} (prebid/salesagent). The
+review already ran; its artifacts are in the main repo (absolute paths, readable
+from here):
+
+- Synthesized findings (start here): ${dir}/FINDINGS.md
+- Postable draft comment:            ${dir}/DRAFT-COMMENT.md
+- Per-dimension agent reports:        ${dir}/review-*.md
+- Author diff (the review scope):     ${dir}/pr.diff
+- Changed files:                      ${dir}/changed-files.txt
+- Prior human review history:         ${dir}/prior-comments.md
+
+Read FINDINGS.md and pr.diff first, then the review-*.md for any finding I ask
+about. Review scope is the diff only. Project bars: DRY violations and missing
+test coverage are BLOCKING; unit tests are not accepted as functional proof —
+wired BDD across all four transports is the bar; guard allowlists may only
+shrink. Ground spec claims against the pinned AdCP 3.1.0-beta.3 (docs/adcp-spec-version.md).
+Do not post anything to GitHub. Wait for my direction on what to poke at or fix.
+EOF
+}
+
+# Assemble the review run into a single local HTML file. Delegates to the
+# sibling pr-review-artifact script (deterministic; no LLM). Any args pass through
+# (e.g. a run dir, --out FILE, --open, --refresh).
+cmd_artifact() {
+  local script
+  script="$(dirname "$(command -v pr-review-artifact || echo "$0")")/pr-review-artifact"
+  [ -x "$script" ] || script="pr-review-artifact"
+  command -v "$script" >/dev/null 2>&1 || [ -x "$script" ] || die "pr-review-artifact not found (re-run install.sh)"
+  "$script" "$@"
+}
+
+cmd_clean() {
+  # Sibling worktrees are YOURS — never removed here (they may hold your commits).
+  # This only prunes stale git bookkeeping for worktrees already deleted by hand.
+  git -C "$ROOT" worktree prune
+  log "pruned stale worktree bookkeeping; your ${WT_PREFIX}<NNNN> worktrees left intact"
+}
+
+main() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    manifest) cmd_manifest "$@";;
+    post)     cmd_post "$@";;
+    hydrate)  cmd_hydrate "$@";;
+    artifact) cmd_artifact "$@";;
+    clean)    cmd_clean "$@";;
+    *) die "usage: pr-review-queue {manifest [PR...] | post <PR> [--preview] [--dir D] | hydrate <PR> | artifact [DIR] [--open] | clean}";;
+  esac
+}
+main "$@"

@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""pr-review-artifact — deterministically assemble a review run into ONE local
+HTML file. Fixed template, no LLM: same review outputs in, same page out.
+
+Input : a review run dir (the one holding manifest.json + per-PR review_dir/).
+        Defaults to the newest run under the pr-review-queue state dir.
+Output: <run_dir>/review-artifact.html (override with --out).
+
+Per PR it renders the postable comment (DRAFT-COMMENT.md), the inline comments
+(REVIEW-INLINE.json), and the full findings (FINDINGS.md, collapsed). A summary
+table leads with PR number, title, author, and last-updated. PR/issue numbers
+(#NNNN) and author handles are clickable. Author + last-updated + state come
+from `gh` and are cached to <run_dir>/pr-meta.json so re-runs are stable and
+work offline; pass --refresh to re-fetch.
+
+Usage:
+  pr-review-artifact [RUN_DIR] [--out FILE] [--open] [--refresh]
+"""
+import argparse, glob, html, json, os, re, subprocess, sys, datetime
+
+STATE_BASE = os.environ.get(
+    "PR_REVIEW_HOME",
+    os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                 "pr-review-queue"),
+)
+
+
+def newest_run():
+    hits = glob.glob(os.path.join(STATE_BASE, "*", "queue", "*", "manifest.json"))
+    if not hits:
+        sys.exit(f"pr-review-artifact: no runs found under {STATE_BASE} (pass RUN_DIR explicitly)")
+    return os.path.dirname(max(hits, key=os.path.getmtime))
+
+
+def repo_from_url(url):
+    m = re.search(r"github\.com/([^/]+/[^/]+)/(?:pull|issues)/", url or "")
+    return m.group(1) if m else None
+
+
+def gh_meta(pr, repo):
+    """Return {author, updated, state, title, url} for a PR, or a blank record."""
+    blank = {"author": None, "updated": None, "state": None, "title": None, "url": None}
+    try:
+        out = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--repo", repo, "--json",
+             "number,title,author,updatedAt,state,url"],
+            capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return blank
+        d = json.loads(out.stdout)
+        return {"author": (d.get("author") or {}).get("login"),
+                "updated": d.get("updatedAt"), "state": d.get("state"),
+                "title": d.get("title"), "url": d.get("url")}
+    except Exception:
+        return blank
+
+
+def load_meta(run_dir, prs, repo, refresh):
+    cache_path = os.path.join(run_dir, "pr-meta.json")
+    cache = {}
+    if os.path.exists(cache_path) and not refresh:
+        try:
+            cache = json.load(open(cache_path))
+        except Exception:
+            cache = {}
+    changed = False
+    for pr in prs:
+        key = str(pr["pr"])
+        if key not in cache or cache[key].get("author") is None:
+            cache[key] = gh_meta(pr["pr"], repo)
+            changed = True
+    if changed:
+        try:
+            json.dump(cache, open(cache_path, "w"), indent=2)
+        except Exception:
+            pass
+    return cache
+
+
+# ── markdown → html (fixed, deterministic subset) ────────────────────────────
+def _autolink(text, repo):
+    """On already-escaped, non-code text: link #NNNN issue/PR refs only.
+    Deliberately does NOT autolink @handles: review bodies are full of Gherkin
+    tags (@T-UC-*, @a2a, @BR-RULE-*) that are not GitHub users; the PR author is
+    linked explicitly in the summary and header instead."""
+    if repo:
+        text = re.sub(r"(?<![\w/])#(\d+)\b",
+                      rf'<a href="https://github.com/{repo}/issues/\1">#\1</a>', text)
+    return text
+
+
+def inline(t, repo):
+    """Inline markdown: code spans protected, then links/bold/autolink."""
+    parts = re.split(r"(`[^`]+`)", t)
+    out = []
+    for i, seg in enumerate(parts):
+        if i % 2 == 1:  # code span
+            out.append("<code>" + html.escape(seg[1:-1], quote=False) + "</code>")
+            continue
+        s = html.escape(seg, quote=False)
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        s = _autolink(s, repo)
+        out.append(s)
+    return "".join(out)
+
+
+def render_md(text, repo):
+    lines = text.split("\n")
+    out, i, n = [], 0, len(lines)
+    stack = []
+
+    def close():
+        while stack:
+            out.append(f"</{stack.pop()}>")
+
+    while i < n:
+        s = lines[i].strip()
+        if not s:
+            close(); i += 1; continue
+        # table
+        if s.startswith("|") and i + 1 < n and set(lines[i + 1].strip()) <= set("|-: "):
+            close()
+            hdr = [c.strip() for c in s.strip("|").split("|")]
+            out.append('<div class="tw"><table><thead><tr>'
+                       + "".join(f"<th>{inline(c, repo)}</th>" for c in hdr)
+                       + "</tr></thead><tbody>")
+            i += 2
+            while i < n and lines[i].strip().startswith("|"):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                out.append("<tr>" + "".join(f"<td>{inline(c, repo)}</td>" for c in cells) + "</tr>")
+                i += 1
+            out.append("</tbody></table></div>")
+            continue
+        if s == "---":
+            close(); out.append("<hr>"); i += 1; continue
+        m = re.match(r"(#{1,6})\s+(.*)", s)
+        if m:
+            close(); lvl = len(m.group(1))
+            out.append(f"<h{lvl}>{inline(m.group(2), repo)}</h{lvl}>"); i += 1; continue
+        if re.match(r"[-*]\s+", s):
+            if not stack or stack[-1] != "ul":
+                out.append("<ul>"); stack.append("ul")
+            out.append(f"<li>{inline(re.sub(r'^[-*]\\s+', '', s), repo)}</li>"); i += 1; continue
+        close(); out.append(f"<p>{inline(s, repo)}</p>"); i += 1
+    close()
+    return "\n".join(out)
+
+
+def fmt_updated(iso):
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M") + " UTC"
+    except Exception:
+        return iso
+
+
+def read(path):
+    try:
+        return open(path).read()
+    except Exception:
+        return ""
+
+
+def st_class(state):
+    return {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}.get((state or "").upper(), "open")
+
+
+CSS = """
+:root{--bg:#f5f4f1;--panel:#fffefb;--ink:#232019;--ink2:#615a4d;--line:#e3ded3;--line2:#eee9de;
+--accent:#5a4a86;--open:#3f7d54;--merged:#7a5aa8;--closed:#b23a48;--mono:#efeae0;
+--sh:0 1px 2px rgba(40,32,18,.05),0 10px 26px -18px rgba(40,32,18,.26);}
+@media(prefers-color-scheme:dark){:root{--bg:#151412;--panel:#1d1b17;--ink:#ece7db;--ink2:#a49c8c;
+--line:#322e26;--line2:#2a271f;--accent:#b7a1e6;--open:#6bbb84;--merged:#b79ae0;--closed:#e0808c;--mono:#26231c;
+--sh:0 1px 2px rgba(0,0,0,.3),0 12px 30px -20px rgba(0,0,0,.7);}}
+:root[data-theme="dark"]{--bg:#151412;--panel:#1d1b17;--ink:#ece7db;--ink2:#a49c8c;--line:#322e26;--line2:#2a271f;
+--accent:#b7a1e6;--open:#6bbb84;--merged:#b79ae0;--closed:#e0808c;--mono:#26231c;}
+:root[data-theme="light"]{--bg:#f5f4f1;--panel:#fffefb;--ink:#232019;--ink2:#615a4d;--line:#e3ded3;--line2:#eee9de;
+--accent:#5a4a86;--open:#3f7d54;--merged:#7a5aa8;--closed:#b23a48;--mono:#efeae0;}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,system-ui,sans-serif}
+.mono,code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.wrap{max-width:1000px;margin:0 auto;padding:38px 26px 110px}
+h1{font-size:24px;margin:0 0 3px;letter-spacing:-.01em}
+.sub{color:var(--ink2);font-size:13px;margin:0 0 24px}
+.summary{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;box-shadow:var(--sh);margin-bottom:30px}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:8px 13px;border-bottom:1px solid var(--line2);vertical-align:top}
+th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);font-weight:600}
+tbody tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.dt{color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.pr-link{font-weight:600}
+.chip{display:inline-block;font-size:10.5px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);text-transform:lowercase;white-space:nowrap}
+.st-open{color:var(--open);border-color:color-mix(in srgb,var(--open) 40%,var(--line))}
+.st-merged{color:var(--merged);border-color:color-mix(in srgb,var(--merged) 40%,var(--line))}
+.st-closed{color:var(--closed);border-color:color-mix(in srgb,var(--closed) 40%,var(--line))}
+.pr{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px 28px;margin-bottom:22px;box-shadow:var(--sh);scroll-margin-top:16px}
+.pr-head{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--line2);margin-bottom:8px}
+.pr-num{font-family:ui-monospace,monospace;font-size:20px;font-weight:700;color:var(--accent)}
+.pr-title{font-size:16px;font-weight:650;flex:1;min-width:200px}
+.pr-meta{color:var(--ink2);font-size:12.5px;display:flex;gap:14px;flex-wrap:wrap;width:100%;margin-top:2px}
+.body h2{font-size:15px;margin:18px 0 6px}
+.body h3{font-size:14px;margin:16px 0 4px;padding-left:11px;border-left:3px solid var(--accent)}
+.body h4{font-size:12.5px;margin:12px 0 4px;color:var(--ink2);text-transform:uppercase;letter-spacing:.05em}
+.body p{margin:7px 0}.body ul{margin:6px 0 10px;padding-left:20px}.body li{margin:3px 0}
+.body code{background:var(--mono);padding:1px 5px;border-radius:5px;font-size:12.5px}
+.body hr{border:none;border-top:1px solid var(--line2);margin:18px 0}
+.body table code{white-space:nowrap}
+details{margin-top:12px;border-top:1px solid var(--line2);padding-top:10px}
+summary{cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:600}
+.inl td.loc{white-space:nowrap;font-size:12px;color:var(--ink2)}
+.inl td{font-size:12.5px}
+.empty{color:var(--ink2);font-style:italic;font-size:13px}
+.foot{color:var(--ink2);font-size:11.5px;margin-top:34px;border-top:1px solid var(--line);padding-top:14px}
+"""
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="pr-review-artifact")
+    ap.add_argument("run_dir", nargs="?", help="review run dir (default: newest)")
+    ap.add_argument("--out", help="output HTML path (default: <run_dir>/review-artifact.html)")
+    ap.add_argument("--open", action="store_true", help="open the file in the browser when done")
+    ap.add_argument("--refresh", action="store_true", help="re-fetch PR metadata from GitHub")
+    args = ap.parse_args()
+
+    run_dir = args.run_dir or newest_run()
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        sys.exit(f"pr-review-artifact: no manifest.json in {run_dir}")
+    manifest = json.load(open(manifest_path))
+    prs = manifest.get("prs", [])
+    if not prs:
+        sys.exit("pr-review-artifact: manifest has no PRs")
+    repo = repo_from_url(prs[0].get("url"))
+    meta = load_meta(run_dir, prs, repo, args.refresh)
+    run_id = os.path.basename(run_dir)
+
+    rows, cards = [], []
+    for p in prs:
+        num = p["pr"]
+        rd = p["review_dir"]
+        m = meta.get(str(num), {})
+        title = m.get("title") or p.get("title") or ""
+        author = m.get("author")
+        state = m.get("state")
+        url = m.get("url") or p.get("url") or (f"https://github.com/{repo}/pull/{num}" if repo else "#")
+        author_html = (f'<a href="https://github.com/{html.escape(author)}">{html.escape(author)}</a>'
+                       if author else '<span class="dt">unknown</span>')
+
+        draft = read(os.path.join(rd, "DRAFT-COMMENT.md"))
+        findings = read(os.path.join(rd, "FINDINGS.md"))
+        try:
+            inline_c = json.load(open(os.path.join(rd, "REVIEW-INLINE.json")))
+        except Exception:
+            inline_c = []
+
+        rows.append(
+            f'<tr><td class="mono"><a class="pr-link" href="{html.escape(url)}">#{num}</a></td>'
+            f'<td><a href="#pr{num}">{html.escape(title)}</a></td>'
+            f'<td class="mono">{author_html}</td>'
+            f'<td class="dt">{fmt_updated(m.get("updated"))}</td>'
+            f'<td><span class="chip st-{st_class(state)}">{(state or "open").lower()}</span></td>'
+            f'<td class="num">{len(inline_c)}</td></tr>')
+
+        inline_rows = "".join(
+            f'<tr><td class="loc mono">{html.escape(str(c.get("path","")))}:{c.get("line","")}</td>'
+            f'<td>{inline(str(c.get("body","")), repo)}</td></tr>'
+            for c in inline_c)
+        inline_block = (
+            f'<details><summary>{len(inline_c)} inline comment(s)</summary>'
+            f'<div class="tw"><table class="inl"><thead><tr><th>location</th><th>comment</th></tr></thead>'
+            f'<tbody>{inline_rows}</tbody></table></div></details>'
+            if inline_c else '<p class="empty">No inline comments.</p>')
+        findings_block = (
+            f'<details><summary>Full findings (internal working doc)</summary>'
+            f'<div class="body">{render_md(findings, repo)}</div></details>'
+            if findings.strip() else "")
+        body_html = (render_md(draft, repo) if draft.strip()
+                     else '<p class="empty">No postable comment drafted.</p>')
+
+        cards.append(
+            f'<section id="pr{num}" class="pr">'
+            f'<div class="pr-head"><span class="pr-num"><a href="{html.escape(url)}">#{num}</a></span>'
+            f'<span class="pr-title">{html.escape(title)}</span>'
+            f'<div class="pr-meta"><span>author: {author_html}</span>'
+            f'<span>updated: {fmt_updated(m.get("updated"))}</span>'
+            f'<span>state: {(state or "open").lower()}</span></div></div>'
+            f'<div class="body">{body_html}</div>'
+            f'{inline_block}{findings_block}</section>')
+
+    generated = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PR Review — {html.escape(repo or run_id)}</title>
+<style>{CSS}</style></head><body><div class="wrap">
+<h1>PR Review — {html.escape(repo or "")}</h1>
+<p class="sub">Run <code>{html.escape(run_id)}</code> · {len(prs)} PR(s) · assembled {generated}</p>
+<div class="summary"><div class="tw"><table>
+<thead><tr><th>PR</th><th>Title</th><th>Author</th><th>Last updated</th><th>State</th><th class="num">Inline</th></tr></thead>
+<tbody>{''.join(rows)}</tbody></table></div></div>
+{''.join(cards)}
+<div class="foot">Deterministically assembled by pr-review-artifact from {html.escape(run_dir)}. Draft — nothing here is posted. Author / last-updated / state cached in pr-meta.json (--refresh to update).</div>
+</div></body></html>"""
+
+    out = args.out or os.path.join(run_dir, "review-artifact.html")
+    open(out, "w").write(page)
+    print(out)
+    if args.open:
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        subprocess.run([opener, out], check=False)
+
+
+if __name__ == "__main__":
+    main()
