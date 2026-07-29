@@ -21,6 +21,7 @@ Exit: 2 = a self-test failed · 1 = a snapshot is stale · 0 = self-tests pass a
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -28,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 # (name, needs_uv [imports adcp/src], scan_args). citation_freshness is harness-scoped here —
 # src + skills citations are a per-PR-diff concern, not a harness-freshness one.
 DETECTORS = [
-    ("citation_freshness", False, [".claude/agents", ".claude/rules/private"]),
+    ("citation_freshness", False, [str(HERE.parent.parent / "agents"), str(HERE.parent)]),
     ("recovery_audit", True, []),
     ("sdk_spec_drift", True, []),
     ("fixme_format", False, []),
@@ -36,7 +37,7 @@ DETECTORS = [
 
 
 def _run(name: str, uv: bool, args: list[str]) -> subprocess.CompletedProcess:
-    cmd = (["uv", "run", "python"] if uv else ["python3"]) + [str(HERE / f"{name}.py"), *args]
+    cmd = (["uv", "run", "python"] if uv else [sys.executable]) + [str(HERE / f"{name}.py"), *args]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
