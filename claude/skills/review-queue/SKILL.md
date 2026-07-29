@@ -1,139 +1,161 @@
 ---
-name: pr-review-queue
+name: review-queue
 description: >
-  Automated multi-agent PR review. For the PRs you name (or pr-radar's RE-REVIEW +
-  NEVER-REVIEWED buckets), checks each out safely, fans out 8 review agents
-  (dry, testing, python-practices, consistency, layering, adcp-grounding,
-  ratchet-allowlists, bdd-grounding), and synthesizes a draft review comment per PR.
-  Draft-only — you approve, then it posts. Use for "review my PR queue", "run the PR
-  review pipeline".
+  Automated multi-agent PR review for prebid/salesagent. For the PRs you name (or
+  pr-radar's RE-REVIEW + NEVER-REVIEWED buckets), checks each out safely to a pinned
+  worktree, runs the deterministic detector pre-pass, fans out 11 review agents
+  (spec-conformance, bdd, error-wire, test-integrity, dry, consistency, layering,
+  python-practices, ratchet-allowlists, security-isolation, admin-ui), and synthesizes
+  ONE draft review per PR under the charter's consolidation + readiness gates.
+  Draft-only — you approve, then it posts. Use for "review my PR queue", "run the review
+  pipeline".
 args: "[PR...]  (empty = pull candidates from pr-radar)"
 ---
 
-# PR Review Queue
+# Review Queue
 
-Automates the manual loop: pr-radar → checkout → 8 review agents → synthesis →
-deterministic local review artifact → you approve → post.
+The merged salesagent PR-review pipeline: Konstantin's deterministic scout → review →
+draft-only-post **chassis**, carrying Chris's **rigor substrate** (the charter, the 10
+mechanized detectors, the P1–P42 catalog). Konstantin's tool is the pipeline; Chris's is
+the brain — this skill runs the brain in the pipeline. See `docs/merge-design.md`.
 
-Three layers. You run this skill; it drives all three and STOPS for your approval
-before anything reaches GitHub. There is no separate orchestration engine — the skill
-itself fans the agents out (Layer 2), so it works anywhere the agents and `bin/`
-scripts are installed.
+Three layers. You run this skill; it drives all three and STOPS for your approval before
+anything reaches GitHub. No separate engine — the skill fans the agents out itself.
 
-The shared reviewing bar lives in [`references/review-policy.md`](references/review-policy.md)
-and the synthesis contract in [`references/synthesis.md`](references/synthesis.md).
-Both are resolved from this skill's installed directory
-(`~/.claude/skills/pr-review-queue/references/`). Edit them to tune the review — the
-whole skill dir is symlinked into `~/.claude/skills`, so changes take effect with no
-re-install.
+**Always-on posture — the charter.** Every agent and the synthesis load
+[`claude/rules/charter/review-charter.md`](../../rules/charter/review-charter.md) as
+Step-0: trust nothing your own tools report (the §2 masking-gotcha doctrine), verify
+symmetrically ("an empty result is a hypothesis to falsify"), tag `[observed]`/`[inferred]`,
+carry a Disposition on every finding, and honor the banned-language list. The reviewing
+bar is [`references/review-policy.md`](references/review-policy.md); the synthesis contract
+is [`references/synthesis.md`](references/synthesis.md); the AI-tell voice pass is
+[`references/review-voice.md`](references/review-voice.md).
 
 ## 1. Scout + setup (Layer 1)
-
-Run the driver to prepare review inputs. Pass the PR numbers the user picked; if none
-were given, the driver pulls candidates from pr-radar.
 
 ```bash
 pr-review-queue manifest $ARGUMENTS
 ```
 
-This prints (and saves) a `manifest.json` with, per PR: the author diff, changed
-files, prior human review comments, and a sibling worktree at
-`<worktree-base>/<repo>-pr<NNNN>` (branch `pr-<NNNN>-review`; the base is set at install,
-default `~/projects`, overridable with `PR_REVIEW_WT_BASE`). The review agents grep that
-worktree, so the driver brings it to the **exact PR head the diff was built from** on
-every run — fast-forward on a lag, hard-reset on a divergence (the old HEAD stays
-recoverable via `git reflog`). These worktrees are disposable: worktree ≡ diff scope is
-one snapshot. Layer 2 must NOT re-fetch or reset — that would drift the tree newer than
-the diff the agents are grading.
+Prints/saves `manifest.json` with, per PR: the author diff, changed files, prior human
+review comments, and a **sibling worktree pinned to the exact PR head the diff was built
+from** (fast-forward on a lag, hard-reset on a divergence; old HEAD recoverable via
+`git reflog`). `worktree ≡ diff scope` is one snapshot — **Layer 2 must NOT re-fetch or
+reset**, or agents grade code newer than the diff.
 
 ## 2. Review fan-out + synthesis (Layer 2)
 
-For each PR in the manifest, drive two stages. Process PRs one at a time (or a few in
-parallel if the run is large) — within a PR, run the 8 reviewers concurrently.
+Process PRs one at a time (a few in parallel if the run is large). Within a PR:
 
-**Stage 1 — fan out the 8 review agents in parallel.** In a SINGLE message, spawn all
-eight via the Task tool. Each agent's prompt is: the full text of
-`references/review-policy.md`, followed by the PR inputs (absolute paths from the
-manifest: `diff`, `changed_files`, `checkout`, `prior_comments`) and this instruction —
-"Read your own agent definition for your dimension's checklist and finding format,
-apply it to the diff, read the prior-comments file first, and write your findings to
+### Stage 0 — detector pre-pass (deterministic, before any agent)
+
+Run the mechanized detectors in
+[`claude/rules/detectors/`](../../rules/detectors/) against the pinned checkout. They are
+the floor beneath LLM judgment — each catches a defect class a green `make quality`
+provably misses. **They live outside the target tree, so invoke by ABSOLUTE path with
+`cwd` = the worktree**, and scope to the diff with `--base origin/main`:
+
+```bash
+# from the PR's pinned worktree, for each detector:
+python <bot>/claude/rules/detectors/<name>.py --base origin/main
+```
+
+Exit taxonomy: **2 = tool/snapshot broken — do NOT trust** (fix the pin; run
+`bump_check.py`; the SDK-snapshot detectors hard-fail when the installed `adcp` pin ≠
+their snapshot); **1 = actionable worklist** (seed it into the relevant agent below);
+**0 = clean**. 8 of 10 are worklists you adjudicate, not gates — only the two
+snapshot-staleness paths and `disposition_ledger` / `review_completeness` are true gates.
+Collect the exit-1 hits as a **worklist** and hand each agent its slice.
+
+### Stage 1 — fan out the 11 review agents in parallel
+
+In a SINGLE message, spawn all eleven via the Task tool. Each prompt is: the full text of
+`references/review-policy.md`, a pointer to the charter (Step-0), the PR inputs (absolute
+paths from the manifest: `diff`, `changed_files`, `checkout`, `prior_comments`), that
+agent's slice of the detector worklist, and: *"Read your own agent definition for your
+dimension's checklist and finding format, apply it to the diff, read the prior-comments
+file first, adjudicate your seeded detector hits, and write your findings to
 `<review_dir>/review-<name>.md`. Do not modify any source file; your final message is a
-one-line status only." The eight agent types:
+one-line status only."*
 
-| agent type | dimension |
-|---|---|
-| `review-dry` | logic duplication / missing abstraction |
-| `review-testing` | test quality — behavior vs mock theater |
-| `review-python-practices` | Pythonic idioms, Pydantic, SQLAlchemy 2.0, async |
-| `review-consistency` | naming, error/response shape, convention drift |
-| `review-layering` | transport vs business vs repo vs adapter boundaries |
-| `review-adcp-grounding` | protocol-behavior changes cite the pinned AdCP spec |
-| `review-ratchet-allowlists` | structural-guard / duplication / xfail allowlists only shrink |
-| `review-bdd-grounding` | behavior graded by wired BDD across all four transports |
+| agent type | dimension | owns |
+|---|---|---|
+| `review-spec-conformance` | protocol behavior grounded in the pinned AdCP spec + graded storyboard | pin integrity, schema-vs-SDK |
+| `review-bdd` | behavior graded by wired BDD across all four transports | **transport-parametrization** |
+| `review-error-wire` | error responses assert the wire envelope via guarded helpers | **wire-assertion mechanics** |
+| `review-test-integrity` | unit-test quality — behavior vs mock theater | unit false-floors |
+| `review-dry` | logic duplication / missing abstraction | semantic duplication |
+| `review-consistency` | naming, error/response shape, convention drift | |
+| `review-layering` | transport/business/repo/adapter boundaries + structural guards | **thin-wrappers, typed errors** |
+| `review-python-practices` | Pythonic idioms, Pydantic, SQLAlchemy 2.0, async | (most portable) |
+| `review-ratchet-allowlists` | guards / duplication / xfail allowlists only shrink | + synthesis post-pass |
+| `review-security-isolation` | tenant isolation, authz, money paths | isolation reasoning |
+| `review-admin-ui` | Flask admin UI: routes, `script_root`, OAuth/CSRF, SSTI, tenant scoping in the UI | |
 
-**Stage 2 — synthesize.** Once a PR's eight `review-*.md` exist, spawn ONE synthesis
-agent whose prompt is the full text of `references/synthesis.md` plus the same PR
-inputs. It dedups, verifies each finding against the checkout, distills patterns, runs
-the voice pass over `references/review-voice.md` LAST, and writes three artifacts:
-`FINDINGS.md` (full internal working doc), `DRAFT-COMMENT.md` (the postable review
-**body**), and `REVIEW-INLINE.json` (inline comments anchored to diff lines). It never
-posts.
+Overlaps are deduped by ownership (see each agent's checklist header): transport-parity →
+`bdd`; wire mechanics → `error-wire`; thin-wrappers / typed-errors → `layering`; grep-omission
+tenant checks → `consistency`/`code-patterns`, authz reasoning → `security-isolation`.
 
-If you only need to re-format an existing run (e.g. after editing `synthesis.md` or the
-voice guide), re-run Stage 2 alone over the `review-*.md` already on disk — the eight
-dimension reviews do not need to re-run.
+### Stage 2 — synthesize (with the charter's gates)
 
-The bar in one line: **ONE fix tier — Should fix — no "nice to have".** Scope +
-is-it-a-smell, not importance. DRY, type-safety (`Any`/`dict` where a concrete type
-exists), layer/boundary, missing coverage, and single-transport grading are all Should
-fix, each diagnosed to its architectural root. Never soften a DRY/in-scope smell to
-"optional" or defer it behind an unverified issue number. Wired BDD across all four
-transports is the verification bar; unit tests are not functional proof. Guard
-allowlists may only shrink. Out-of-scope-but-real → Notes, with the reason. A
-maintainer's still-unaddressed prior item leads its section, flagged respectfully. Two
-standing checks: for every behavior the diff changes, ask "which BDD test grades this,
-and does it execute?"; and reconcile with prior rounds in the body — credit what was
-fixed, own anything you previously softened that has since slid. The full text of all
-this is `references/review-policy.md`; do not restate a shorter, drifting copy.
+Once a PR's eleven `review-*.md` exist, spawn ONE synthesis agent (prompt = full text of
+`references/synthesis.md` + the PR inputs). It:
+
+1. Dedups and **verifies each finding against the checkout** (symmetric verification —
+   spot-check the "clean" verdicts too).
+2. Runs the charter **§4b semantic-SSOT consolidation**: unify one concept raised as N
+   shards across agents into a single finding while preserving one ledger row per site
+   (plain `(path,line)` de-dup is explicitly insufficient — it's how real findings get
+   dropped). Gate with `disposition_ledger.py` (exit 0 required).
+3. Runs the **`review-ratchet-allowlists` post-pass over ALL recommendations**: reject any
+   "fix" that grows an xfail set / allowlist / `.duplication-baseline`.
+4. Runs the voice pass over `references/review-voice.md` LAST (prose only, never technical
+   content; strip internal vocab + detector names).
+
+Writes three artifacts, posts nothing: `FINDINGS.md` (internal working doc + verification
+log + convergence table), `DRAFT-COMMENT.md` (postable body), `REVIEW-INLINE.json` (inline
+comments anchored to diff lines).
+
+**The bar in one line: ONE fix tier — Should fix — no "nice to have".** Scope +
+is-it-a-smell, not importance. Out-of-scope-but-real → Notes, with the reason and a
+verified link. A maintainer's still-unaddressed prior item leads its section. Do not
+restate a shorter, drifting copy of `review-policy.md`.
+
+### Stage 3 — readiness gate (§4c, before any "ready" claim)
+
+A readiness/approve verdict is the highest-stakes thing this suite emits. Before emitting
+one: re-pull fresh review state (`review_completeness.py` exit 0), mutation-test the
+claimed invariants (a guard that changes nothing when deleted is dead), enumerate siblings
+of every changed symbol, and **stamp the verdict to (head SHA + pull timestamp)**. No
+mechanized precondition met → no readiness claim; downgrade to "reviewed, findings above".
 
 ## 3. Present + post (Layer 3)
 
-**Presentation is a script, not a vibe.** Do NOT hand-assemble a summary or hand-write
-an HTML page each run — the layout must be identical every time. Build the local review
-artifact with the deterministic assembler and open it:
+**Presentation is a script, not a vibe.** Build the deterministic artifact and open it:
 
 ```bash
 pr-review-queue artifact --open        # newest run -> <run_dir>/review-artifact.html
-# or a specific run:  pr-review-queue artifact <run_dir> --open
 ```
 
-`pr-review-artifact` renders ONE self-contained local HTML file from the run's
-`manifest.json` + each PR's `DRAFT-COMMENT.md` / `REVIEW-INLINE.json` / `FINDINGS.md`:
-a summary table (PR number, title, author, last-updated, state, inline count) followed,
-per PR, by the postable comment, the inline comments, and the full findings
-(collapsed). This IS the presentation of `FINDINGS.md` in full — the maintainer reasons
-over the complete data in the page, not a chat distillation. Point the user at the
-file; do not paraphrase it back.
+Renders ONE self-contained local HTML file (summary table + per-PR postable comment,
+inline comments, and full findings collapsed). This IS the presentation — point the user
+at the file; do not paraphrase it. Then, per PR:
 
-Then, per PR:
-1. The artifact is the working surface. If the user edits the body or the inline JSON,
-   re-run `pr-review-queue artifact` to regenerate (same input -> same page).
-2. Wait for explicit approval per PR.
-3. Preview the exact payload, then on approval post it as ONE GitHub review (body +
-   inline comments at the cited diff lines; anchors are validated against the diff,
-   out-of-diff ones dropped with a warning):
+1. The artifact is the working surface; if the user edits the body/inline JSON, re-run
+   `pr-review-queue artifact` (same input → same page).
+2. Wait for explicit approval **per PR**.
+3. Preview then post as ONE `event=COMMENT` GitHub review (anchors validated against the
+   diff, out-of-diff ones dropped with a warning):
 
 ```bash
-pr-review-queue post <PR> --preview   # show body + inline anchors, post nothing
-pr-review-queue post <PR>             # post the review
+pr-review-queue post <PR> --preview
+pr-review-queue post <PR>
 ```
 
 Do NOT post without per-PR approval. Do NOT batch-post silently.
 
 ## Cleanup
 
-After posting (or to reclaim disk), prune the driver-owned checkouts:
-
 ```bash
-pr-review-queue clean
+pr-review-queue clean     # prune driver-owned checkouts
 ```

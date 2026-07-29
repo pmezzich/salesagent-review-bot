@@ -32,7 +32,17 @@ pr-radar → L1 scout + worktree-pin → L2 fan-out agents (+ detector pre-pass)
 
 ## Status
 
-**Scaffold (Phase 1).** Structure + design only — no agents/detectors ported yet. Build order is in the design doc. Known gaps to resolve while porting:
+**Phase 2 in progress** — the pipeline is assembled end to end:
+
+- ✅ Substrate ported — Chris's charter + 10 detectors + P1–P42 corpus (Apache-2.0), Konstantin's drivers + skill + references (MIT), with `NOTICE` + `licenses/`.
+- ✅ 11 canonical review agents authored in `claude/agents/` — the union/dedup of both source sets per the mapping in the design doc.
+- ✅ Orchestration skill merged (`claude/skills/review-queue/SKILL.md`) — 11 agents + a detector pre-pass + the §4b consolidation / §4c readiness gates + the ratchet post-pass, on Konstantin's draft-only, worktree-pinned backbone.
+
+**Remaining (open TODOs):**
+
+- No `install.sh` yet — needs a cross-platform, zero-footprint installer.
+- Detector/driver adaptation: point detector docstrings at this repo's layout; load the shared `error-code.json` snapshot once across `recovery_audit`/`sdk_spec_drift`/`suggestion_audit`.
+- Dry-run the whole pipeline against a real salesagent PR before trusting it.
 
 - Chris's `review-bdd` depends on `.claude/scripts/inspect_bdd_steps.py`, which is **not in that repo** — supply or downgrade.
 - `pr-radar` has **no JSON output** (it scrapes its own header text) — add a structured emit.
