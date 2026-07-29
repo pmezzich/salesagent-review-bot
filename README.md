@@ -40,7 +40,7 @@ pr-radar → L1 scout + worktree-pin → L2 fan-out agents (+ detector pre-pass)
 
 **Remaining (open TODOs):**
 
-- No `install.sh` yet — needs a cross-platform, zero-footprint installer.
+- `install.sh` exists (zero-footprint: agents/skill/rules → `~/.claude/`, drivers → `~/.local/bin`), but symlinks fall back to copy on Windows/Git-Bash and it's un-tested against a live run.
 - Detector/driver adaptation: point detector docstrings at this repo's layout; load the shared `error-code.json` snapshot once across `recovery_audit`/`sdk_spec_drift`/`suggestion_audit`.
 - Dry-run the whole pipeline against a real salesagent PR before trusting it.
 
