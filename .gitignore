@@ -1,0 +1,18 @@
+# review outputs / run state (kept outside the target tree at runtime; ignore any local copies)
+.reports/
+review-runs/
+*.local.html
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# env / secrets
+.env
+*.secret*
+
+# os
+.DS_Store
+Thumbs.db
