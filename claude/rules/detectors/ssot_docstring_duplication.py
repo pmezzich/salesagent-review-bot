@@ -39,6 +39,9 @@ Usage:
 Exit 1 if check A fires (contradicted claim); 0 if clean / selftest ok / only B|C leads; 2 on error.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import ast
 import re

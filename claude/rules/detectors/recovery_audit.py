@@ -31,6 +31,9 @@ Usage:
 Exit 1 if any incoherence or spec-divergence is found (worklist); 0 if clean / selftest ok.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import sys
 from collections import defaultdict

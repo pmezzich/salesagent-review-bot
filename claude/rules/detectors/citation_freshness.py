@@ -18,6 +18,9 @@ Usage:
 Exit 1 if any candidate-stale citation is found (or a self-test case fails); else 0.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import re
 import subprocess

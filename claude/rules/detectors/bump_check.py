@@ -19,6 +19,9 @@ Usage: uv run python .claude/rules/private/detectors/bump_check.py
 Exit: 2 = a self-test failed · 1 = a snapshot is stale · 0 = self-tests pass and snapshots fresh.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import subprocess
 import sys

@@ -32,6 +32,9 @@ Exit 1 if a papered-over cycle involves a changed file (with --base) or any exis
 0 if clean / selftest ok; 2 on error.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import ast
 import subprocess

@@ -35,6 +35,9 @@ Usage:
   a fold-in you requested is still an unreviewed diff once it lands.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import argparse
 import json

@@ -40,6 +40,9 @@ Usage:
 Exit 1 if any finding (worklist); 0 if clean / selftest ok.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import json
 import subprocess

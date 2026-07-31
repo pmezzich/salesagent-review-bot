@@ -57,6 +57,9 @@ Usage:
 Exit 1 if the contract is unmet or a site was dropped (worklist); 0 if clean / selftest ok; 2 on I/O error.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import re
 import sys

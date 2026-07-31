@@ -31,6 +31,9 @@ Usage:
 Exit 2 if the snapshot is stale (pin moved); exit 1 if a B1 (now-removable) mapping exists; else 0.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import sys
 from pathlib import Path

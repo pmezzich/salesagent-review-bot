@@ -25,6 +25,9 @@ Usage:
 Exit 1 if any non-compliant marker exists (informational worklist); 0 if none / selftest ok.
 """
 from __future__ import annotations
+import sys as _s
+try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 
 import io
 import re
