@@ -35,7 +35,7 @@ derived and can diverge.
 
 ## Step 0 — read the charter
 
-Read `claude/rules/charter/review-charter.md` in full FIRST, and adopt its posture for
+Read `{{BOT_RULES}}/charter/review-charter.md` in full FIRST, and adopt its posture for
 every step below:
 
 - **Trust nothing** — no finding without a `path:line` you opened THIS run; memory/corpus
@@ -52,7 +52,7 @@ every step below:
 - **"What I could not verify"** — mandatory closing section: spec pages you could not
   fetch, storyboards not read, "clean" verdicts not spot-checked (§3).
 
-Then read the dimension's grounding from `claude/rules/corpus/` (Step-0 grounding; citing
+Then read the dimension's grounding from `{{BOT_RULES}}/corpus/` (Step-0 grounding; citing
 a filename is not reading it):
 
 - `reference_adcp_spec_grounding.md` — where/how to read the authoritative spec; your
@@ -129,19 +129,19 @@ consequence):**
   by moving the hook to `uv run mypy`; if an isolated-env hook is reintroduced, the exact
   `==` pin must move in the same change.)
 - **Detector pre-pass** (worklists that SEED your findings — adjudicate each hit, don't
-  block; charter §1.5). Invoke from `claude/rules/detectors/` (absolute path if in a
+  block; charter §1.5). Invoke from `{{BOT_RULES}}/detectors/` (absolute path if in a
   worktree); the recovery/drift snapshots HARD-FAIL if the adcp pin ≠ their pinned snapshot
   — that is itself a staleness finding, `bump_check.py` is the one-command drill:
-  - `python3 claude/rules/detectors/citation_freshness.py src claude` — version literals
+  - `python3 {{BOT_RULES}}/detectors/citation_freshness.py src claude` — version literals
     drifting from the derived pin (grounded exceptions: `# spec-introduced:` /
     `# version-literal-ok`).
-  - `uv run python claude/rules/detectors/recovery_audit.py` — every typed error whose
+  - `uv run python {{BOT_RULES}}/detectors/recovery_audit.py` — every typed error whose
     `(wire_code, recovery)` is internally incoherent or diverges from the spec's
     `CODE_RECOVERY`. Recovery is buyer-ACTIONABLE but storyboard-UNGRADED, so this is the
     only thing that catches the class (e.g. `SERVICE_UNAVAILABLE`/`terminal` where the spec
     says transient). Adjudicate each: a deliberate divergence needs a
     `# recovery: <class> — <spec-grounded reason>` at the source, not silence.
-  - `uv run python claude/rules/detectors/sdk_spec_drift.py` — on an adcp bump or any
+  - `uv run python {{BOT_RULES}}/detectors/sdk_spec_drift.py` — on an adcp bump or any
     error-code / `ERROR_CODE_MAPPING` change: the SDK's `STANDARD_ERROR_CODES` lags the
     published spec enum, so spec-only codes get FORCED to a less-precise mapping (the root
     of the `CONFIGURATION_ERROR`→`SERVICE_UNAVAILABLE` recovery incoherence). A "REMOVE the
@@ -336,9 +336,9 @@ swappable knowledge pack (a buyer-side pack points the same engine at the buyer 
   `src/core/schemas/`, `src/core/exceptions.py`, `ERROR_CODE_MAPPING`,
   `KNOWN_SCHEMA_LIBRARY_MISMATCHES`, `test_pydantic_schema_alignment.py`. Confirm each still
   exists at the reviewed head before citing it.
-- **Detector-path portability:** in this bot the detectors live at `claude/rules/detectors/`
-  and the corpus at `claude/rules/corpus/`; some tool docstrings still carry Chris's original
-  `.claude/rules/private/…` layout. Invoke by the bot's actual path, and by ABSOLUTE path
+- **Detector-path portability:** in this bot the detectors live at `{{BOT_RULES}}/detectors/`
+  and the corpus at `{{BOT_RULES}}/corpus/`; some tool docstrings still carry Chris's original
+  `{{BOT_RULES}}/…` layout. Invoke by the bot's actual path, and by ABSOLUTE path
   from any worktree (the harness is untracked in the target repo).
 - **Portable (repo-agnostic):** the verdict taxonomy (CONFIRMED/UNSPECIFIED/CONTRADICTS/
   SPEC_AMBIGUOUS), the prose-over-SDK / schema-over-SDK grounding discipline, the

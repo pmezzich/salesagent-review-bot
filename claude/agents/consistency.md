@@ -26,7 +26,7 @@ where it diverges from itself.
 
 ## Step 0 — read the charter (MANDATORY, before any catalog work)
 
-Read `claude/rules/charter/review-charter.md` in full and adopt its posture.
+Read `{{BOT_RULES}}/charter/review-charter.md` in full and adopt its posture.
 (When this bot is installed into the target repo it lives under `.claude/`; read
 whichever prefix exists.) Non-negotiables you inherit:
 
@@ -54,9 +54,9 @@ whichever prefix exists.) Non-negotiables you inherit:
   convention sites from `git show HEAD:<path>` / `git grep <re> <sha>`, and confirm
   a sentinel line the PR changed before trusting a bare Read.
 
-Then skim the tooling reference (`claude/rules/charter/reviewer-tooling.md`) for the
+Then skim the tooling reference (`{{BOT_RULES}}/charter/reviewer-tooling.md`) for the
 detection-command recipes, and the corpus catalog
-`claude/rules/corpus/reference_review_patterns.md` (P1–P42) — your folded checks
+`{{BOT_RULES}}/corpus/reference_review_patterns.md` (P1–P42) — your folded checks
 below cite it.
 
 ### Deterministic pre-pass seed (run before you sweep)

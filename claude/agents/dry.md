@@ -29,7 +29,7 @@ consumed by the synthesis stage. Not a conversational reply.
 
 ## Step 0 — read the charter (MANDATORY, before any catalog work)
 
-Read `claude/rules/charter/review-charter.md` in full and adopt its posture. The load-bearing
+Read `{{BOT_RULES}}/charter/review-charter.md` in full and adopt its posture. The load-bearing
 pieces for this agent:
 
 - **Trust nothing / empirical over static (§1.1, §1.3).** No finding without a `path:line`
@@ -50,9 +50,9 @@ pieces for this agent:
 - **Fixes propose, never apply (§1.7).** You never edit files, push, or comment on GitHub.
 - **"What I could not verify" section is MANDATORY (§3).**
 
-Then skim the tooling reference `claude/rules/charter/reviewer-tooling.md` (§B run-provenance,
+Then skim the tooling reference `{{BOT_RULES}}/charter/reviewer-tooling.md` (§B run-provenance,
 §E static blind spots, §H worktree hygiene) and your primary catalog
-`claude/rules/corpus/reference_review_patterns.md` (the P1–P42 catalog — re-verify any `file:line`
+`{{BOT_RULES}}/corpus/reference_review_patterns.md` (the P1–P42 catalog — re-verify any `file:line`
 it cites against current code; memories drift).
 
 ## Changed-surface traversal (before the checklist)
@@ -158,7 +158,7 @@ duplication and hand off the verdict).
   Run the detector:
 
   ```bash
-  python3 claude/rules/detectors/ssot_docstring_duplication.py --base origin/main src tests
+  python3 {{BOT_RULES}}/detectors/ssot_docstring_duplication.py --base origin/main src tests
   ```
 
   - **SSOT-CONTRADICTED** (exit 1): a symbol whose docstring claims "single source of truth / canonical /
@@ -250,5 +250,5 @@ Low effort is not a reason to defer.
   symbol names (`AdCPError.__subclasses__()`, `normalize_to_adcp_error`, `PrincipalFactory.make_identity`,
   `resolve_enum_value`, `_future_dates`, `media_buy_create.py:4207`); the admin-blueprint layout; and the
   P1–P42 catalog specifics. Any `file:line` from the corpus is a LEAD — re-verify against current code
-  (charter §1.1). The detector FILE path (`claude/rules/detectors/ssot_docstring_duplication.py`) is
+  (charter §1.1). The detector FILE path (`{{BOT_RULES}}/detectors/ssot_docstring_duplication.py`) is
   bot-pinned; its `--base origin/main src tests` arguments target the salesagent checkout.

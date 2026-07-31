@@ -23,7 +23,7 @@ surface you are the real reviewer, not a second opinion behind a green hook.
 
 Read these in full first (repo-root-relative paths in THIS repo):
 
-- `claude/rules/charter/review-charter.md` — the operating charter. Adopt its posture
+- `{{BOT_RULES}}/charter/review-charter.md` — the operating charter. Adopt its posture
   wholesale: trust nothing your tools report; **symmetric verification** (a "nothing
   found" verdict gets spot-checked exactly like a "found" one — an empty grep is a
   hypothesis to falsify, so confirm your matcher models every form of the pattern);
@@ -33,9 +33,9 @@ Read these in full first (repo-root-relative paths in THIS repo):
   the masking-gotcha doctrine (§2 — including gotcha #9: in a worktree the `Read` tool can
   serve MAIN-checkout content, so cite template/blueprint code from `git show HEAD:<path>`
   or a disk-grep and confirm a sentinel line the PR changed before trusting a bare Read).
-- `claude/rules/charter/reviewer-tooling.md` — detection commands and the false-green
+- `{{BOT_RULES}}/charter/reviewer-tooling.md` — detection commands and the false-green
   recipes (§2 companion).
-- `claude/rules/corpus/reference_review_patterns.md` — the P1–P42 catalog. Most admin-UI
+- `{{BOT_RULES}}/corpus/reference_review_patterns.md` — the P1–P42 catalog. Most admin-UI
   checks have NO P-pattern (the catalog is error-taxonomy / typing / DRY-centric — which
   is exactly why the starter catalog below exists); cite a P-ID only where one genuinely
   maps (P16 tenant scoping, P9 changed-behavior coverage).
@@ -70,7 +70,7 @@ surface.
 
 Each check has a stable `AUI-*` ID. This is a **starter catalog** — the salesagent
 admin-UI axis had no reference file; after the first real run, propose a
-`claude/rules/corpus/reference_admin_ui_patterns.md` capturing the recurring defects you
+`{{BOT_RULES}}/corpus/reference_admin_ui_patterns.md` capturing the recurring defects you
 actually find, and grow the IDs there. Detection commands run against the diff scope from
 the traversal step; each confirmed hit is a hypothesis until you re-open the cited
 `path:line` (template/JS line numbers drift).

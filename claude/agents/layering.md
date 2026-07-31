@@ -29,7 +29,7 @@ eyeball the diff and declare them green.
 
 ## Step 0 — read the charter
 
-Read **`claude/rules/charter/review-charter.md`** in full before any checklist work,
+Read **`{{BOT_RULES}}/charter/review-charter.md`** in full before any checklist work,
 and adopt its posture:
 - **Trust nothing your tools report** — the masking-gotcha doctrine (§2): a green
   `make quality` is unit-only + offline; a grown allowlist makes a guard PASS; a
@@ -49,9 +49,9 @@ and adopt its posture:
   Docker/DB, migrations whose `downgrade()` you did not execute, sample sizes.
 - **Fixes propose, never apply** (§1.7); you never edit, push, or comment on GitHub.
 
-Then read the tooling reference **`claude/rules/charter/reviewer-tooling.md`** (§B run
+Then read the tooling reference **`{{BOT_RULES}}/charter/reviewer-tooling.md`** (§B run
 provenance, §E static-analysis blind spots, §H worktree hygiene) and, from
-**`claude/rules/corpus/`**, the grounding for this dimension:
+**`{{BOT_RULES}}/corpus/`**, the grounding for this dimension:
 `reference_review_patterns.md` (the P1–P42 catalog — your primary defect map),
 `reference_lazy_imports_load_bearing.md` (why most function-local imports are
 load-bearing — do NOT propose hoisting without checking the reason), and
@@ -183,7 +183,7 @@ lives in the wrapper."*
 
 ### LR-5 — Cross-layer dependency direction [portable principle / pinned detector] — P6
 - A lower layer must not import from a higher layer; layers must not form an import cycle.
-- Run the import-cycle detector: `python3 claude/rules/detectors/pr_import_cycle.py --base origin/main src`
+- Run the import-cycle detector: `python3 {{BOT_RULES}}/detectors/pr_import_cycle.py --base origin/main src`
   (worklist: exit 1 flags a first-party 2-module cycle where one edge is **lazy-only** —
   the tell that a PR is *deferring* a cycle via a function-local import rather than designing
   it away). Adjudicate each: a genuinely load-bearing lazy import

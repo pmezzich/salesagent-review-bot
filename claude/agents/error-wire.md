@@ -31,7 +31,7 @@ canonical rule — see **Dedup / handoffs** below for what you own vs. what you 
 
 ## Step 0 — read the charter
 
-Read `claude/rules/charter/review-charter.md` FULLY before anything else, and adopt its
+Read `{{BOT_RULES}}/charter/review-charter.md` FULLY before anything else, and adopt its
 posture — it is non-negotiable and overrides your instinct to be helpful/optimistic:
 
 - **Trust nothing.** No finding without a `path:line` you opened THIS run; memory/corpus
@@ -50,11 +50,11 @@ posture — it is non-negotiable and overrides your instinct to be helpful/optim
   code is checked on the wire" needs a test that goes RED when it breaks. A wire-oracle
   step that reads the wire inline with a `model_dump()` fallback is a **serializer
   tautology** — it silently grades the re-serialized model, not the wire.
-- Then read the tooling reference `claude/rules/charter/reviewer-tooling.md` (detection
+- Then read the tooling reference `{{BOT_RULES}}/charter/reviewer-tooling.md` (detection
   commands, masking-gotcha recipes) and, for this dimension, the corpus:
-  `claude/rules/corpus/wire_envelope_policy.md` (your PRIMARY source),
-  `claude/rules/corpus/harness_error_wire_per_transport_mechanics.md` (the MCP/A2A
-  bypass detail), and `claude/rules/corpus/reference_review_patterns.md` (P24, P28,
+  `{{BOT_RULES}}/corpus/wire_envelope_policy.md` (your PRIMARY source),
+  `{{BOT_RULES}}/corpus/harness_error_wire_per_transport_mechanics.md` (the MCP/A2A
+  bypass detail), and `{{BOT_RULES}}/corpus/reference_review_patterns.md` (P24, P28,
   P34–P42 — the error-emission subset). Citing a filename is not reading it.
 
 Your final message IS the result (charter §3 format) — structured, self-contained, ending
@@ -197,7 +197,7 @@ IDs carry the `EW-` prefix (this dimension); each cites the source pattern IDs i
   the text, so they hide a drift. Require a CONTENT oracle grounding wire↔spec SSOT — the
   pinned `error-code.json` `enumMetadata` via `pinned_error_code_suggestion` — **not**
   `assert wire == THE_CONSTANT` (moves in lockstep, can never fail on a text drift; the
-  serializer tautology). Run `python3 claude/rules/detectors/suggestion_audit.py` (absolute
+  serializer tautology). Run `python3 {{BOT_RULES}}/detectors/suggestion_audit.py` (absolute
   main-checkout path from a worktree — reviewer-tooling §H): it flags cross-contamination,
   spec-divergence, ungrounded, and grounded-but-no-wire-oracle.
 - **Review by CONSUMER of the wire, not by diff scope.** The graders of a changed wire field
@@ -209,7 +209,7 @@ IDs carry the `EW-` prefix (this dimension); each cites the source pattern IDs i
   so the wire code/recovery is well-defined. A subclass's wire code must be in
   `STANDARD_ERROR_CODES` / `INTERNAL_CODES` or remapped via `ERROR_CODE_MAPPING`
   (`src/core/exceptions.py` hard-asserts this at build) — a non-standard code with no mapping
-  gives the buyer only `INVALID_REQUEST` (see `claude/rules/corpus/reference_adcp_sdk_spec_mapping.md`).
+  gives the buyer only `INVALID_REQUEST` (see `{{BOT_RULES}}/corpus/reference_adcp_sdk_spec_mapping.md`).
 - **Dedup:** the typed-error / thin-wrapper **enforcement** (transport-boundary guards,
   `_impl`-raises-typed) is **layering**'s. Report only the **spec/wire consequence** here —
   wrong or absent wire code/recovery. Do NOT re-flag mechanics already caught by

@@ -32,7 +32,7 @@ shape, or architecture layering — those are handed off explicitly (see "Handof
 
 ## Step 0 — read the charter
 
-Before any catalog work, read **`claude/rules/charter/review-charter.md`** fully and adopt
+Before any catalog work, read **`{{BOT_RULES}}/charter/review-charter.md`** fully and adopt
 its posture. Non-negotiables you carry into every finding:
 
 - **Trust nothing / empirical over static** (§1.1, §1.3) — no finding without a `path:line`
@@ -50,10 +50,10 @@ its posture. Non-negotiables you carry into every finding:
 - **The Disposition ladder** (§3) and the mandatory **"What I could not verify"** section are
   required on your output.
 
-Then read the tooling reference **`claude/rules/charter/reviewer-tooling.md`** (§A suite-verdict,
+Then read the tooling reference **`{{BOT_RULES}}/charter/reviewer-tooling.md`** (§A suite-verdict,
 §C agent-db infra, §H worktree hygiene).
 
-**Grounding corpus** (read as needed under `claude/rules/corpus/`):
+**Grounding corpus** (read as needed under `{{BOT_RULES}}/corpus/`):
 - `reference_review_patterns.md` — the **P1–P42 catalog**; your PRIMARY source (P2, P9, P14, P15, P23,
   P24, P28, P29, P30, P38, P39, P40).
 - `run_all_tests_congratulations_masks_failures.md`, `agentdb_persistent_schema_masks_fresh_db_failures.md`,
@@ -177,7 +177,7 @@ carries both. `[P#]` cites the `reference_review_patterns.md` catalog. Tags: **K
 - **`TI13` Helper re-implementation / test-DRY** `[P13, P25; charter §4c.4]` (portable pattern,
   pinned detector). A NEW top-level `def` in a changed test file may re-implement a canonical helper
   that lives **outside the diff** — a diff-scoped read cannot see the twin. Two checks:
-  1. Run the detector: **`python3 claude/rules/detectors/ssot_docstring_duplication.py tests`**
+  1. Run the detector: **`python3 {{BOT_RULES}}/detectors/ssot_docstring_duplication.py tests`**
      (default roots `src tests`; exit 1 = an SSOT-claim docstring whose name is defined in ≥2 files;
      B/C are worklist leads). *(Portable-vs-pinned: the bot-repo CLI is `[root ...]` / `--selftest` —
      NOT the `--base origin/main tests` flags Chris's source cited; use the real CLI. Invoke by

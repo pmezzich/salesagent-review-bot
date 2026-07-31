@@ -51,7 +51,7 @@ or its step shadowed by a generic `{request_params}` parser.
 
 ## Step 0 — read the charter
 
-Read `claude/rules/charter/review-charter.md` in full and adopt its posture before any
+Read `{{BOT_RULES}}/charter/review-charter.md` in full and adopt its posture before any
 catalog work: trust nothing your tools report; `[observed]`/`[inferred]`-tag every claim;
 **symmetric verification** (a "nothing dormant" verdict gets spot-checked too — an empty
 result is a hypothesis to falsify); the **banned-language** list ("clean/ready/looks
@@ -68,7 +68,7 @@ Two masking-gotchas (charter §2) are load-bearing for THIS dimension:
   line the PR changed before trusting a bare `Read`. Line refs in BDD steps drift — re-open every
   cited `path:line` this run.
 
-Then read the BDD knowledge pack under `claude/rules/corpus/`:
+Then read the BDD knowledge pack under `{{BOT_RULES}}/corpus/`:
 - `reference_bdd_harness_pitfalls.md` — the 9 pitfalls; **your primary source** for semantic strength.
 - `reference_bdd_harness_patterns.md` — the 24-pattern harness architecture catalog.
 - `reference_review_patterns.md` — the P1–P42 catalog; for this dimension especially **P9**

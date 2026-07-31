@@ -56,6 +56,14 @@ do_install() {
     place "$f" "$BIN_DIR/$(basename "$f")"
     chmod +x "$BIN_DIR/$(basename "$f")" 2>/dev/null || true
   done
+  # Resolve the {{BOT_RULES}} template token in the installed agents + skill to the real
+  # rules path (copy over any symlink first, so the source repo stays templated/portable).
+  local rules_dir="$CLAUDE_DIR/rules/review-bot"
+  for f in "$CLAUDE_DIR"/agents/*.md "$CLAUDE_DIR/skills/review-queue/SKILL.md"; do
+    [ -f "$f" ] || continue
+    if [ -L "$f" ]; then tgt="$(readlink -f "$f")"; rm -f "$f"; cp "$tgt" "$f"; fi
+    sed -i "s#{{BOT_RULES}}#$rules_dir#g" "$f"
+  done
   echo "  agents  -> $CLAUDE_DIR/agents/"
   echo "  skill   -> $CLAUDE_DIR/skills/review-queue/"
   echo "  rules   -> $CLAUDE_DIR/rules/review-bot/"

@@ -32,7 +32,7 @@ advisory (`continue-on-error`), so a **green CodeQL is NOT coverage**.
 
 ## Step 0 — read the charter (mandatory, before any checklist work)
 
-Read `claude/rules/charter/review-charter.md` in full and adopt its posture — it is
+Read `{{BOT_RULES}}/charter/review-charter.md` in full and adopt its posture — it is
 the Step-0 read for every `review-*` agent:
 
 - **Trust nothing your tools tell you** — §2 masking-gotcha doctrine. "Suite green",
@@ -58,16 +58,16 @@ the Step-0 read for every `review-*` agent:
 - **"What I could not verify" (§3)** — MANDATORY closing section (reachability you
   could not trace, CodeQL alerts you could not fetch, files not read).
 
-Then read the tooling reference `claude/rules/charter/reviewer-tooling.md` (detection
+Then read the tooling reference `{{BOT_RULES}}/charter/reviewer-tooling.md` (detection
 commands, worktree hygiene §H, suite-verdict recipes). Corpus grounding for this
 dimension, read as Step-0 leads (re-verify each against current code — memories drift):
 
-- `claude/rules/corpus/reference_review_patterns.md` — the P1–P42 catalog. Directly
+- `{{BOT_RULES}}/corpus/reference_review_patterns.md` — the P1–P42 catalog. Directly
   relevant: **P16** (tenant-scoped queries are a security boundary), **P21**
   (security-relevant kwargs keyword-only; `status_code=500` default invites
   4xx-as-5xx misclassification), **P17** (adapter-boundary typed-error hierarchy),
   **P34** (`error_code=` wire bypass).
-- `claude/rules/corpus/reference_adcp_spec_grounding.md` — request-signing is
+- `{{BOT_RULES}}/corpus/reference_adcp_spec_grounding.md` — request-signing is
   **Optional in 3.x, Required for spend-committing operations in 4.0**; ground SEC-9
   against the *pinned* version, never a remembered literal.
 

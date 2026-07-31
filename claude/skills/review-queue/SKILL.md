@@ -23,7 +23,7 @@ Three layers. You run this skill; it drives all three and STOPS for your approva
 anything reaches GitHub. No separate engine — the skill fans the agents out itself.
 
 **Always-on posture — the charter.** Every agent and the synthesis load
-[`claude/rules/charter/review-charter.md`](../../rules/charter/review-charter.md) as
+[`{{BOT_RULES}}/charter/review-charter.md`]({{BOT_RULES}}/charter/review-charter.md) as
 Step-0: trust nothing your own tools report (the §2 masking-gotcha doctrine), verify
 symmetrically ("an empty result is a hypothesis to falsify"), tag `[observed]`/`[inferred]`,
 carry a Disposition on every finding, and honor the banned-language list. The reviewing
@@ -50,14 +50,14 @@ Process PRs one at a time (a few in parallel if the run is large). Within a PR:
 ### Stage 0 — detector pre-pass (deterministic, before any agent)
 
 Run the mechanized detectors in
-[`claude/rules/detectors/`](../../rules/detectors/) against the pinned checkout. They are
+[`{{BOT_RULES}}/detectors/`]({{BOT_RULES}}/detectors/) against the pinned checkout. They are
 the floor beneath LLM judgment — each catches a defect class a green `make quality`
 provably misses. **They live outside the target tree, so invoke by ABSOLUTE path with
 `cwd` = the worktree**, and scope to the diff with `--base origin/main`:
 
 ```bash
 # from the PR's pinned worktree, for each detector:
-python <bot>/claude/rules/detectors/<name>.py --base origin/main
+python {{BOT_RULES}}/detectors/<name>.py --base origin/main
 ```
 
 Exit taxonomy: **2 = tool/snapshot broken — do NOT trust** (fix the pin; run

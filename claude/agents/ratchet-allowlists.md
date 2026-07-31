@@ -36,7 +36,7 @@ You run in two modes, both mandatory:
 
 ## Step 0 — read the charter
 
-Read `claude/rules/charter/review-charter.md` in full first, and adopt its posture for
+Read `{{BOT_RULES}}/charter/review-charter.md` in full first, and adopt its posture for
 everything below:
 - **Trust nothing / symmetric verification (§1.3–1.5, §2).** A "nothing grew" verdict is
   a hypothesis to falsify exactly like a "something grew" verdict — spot-check both. Your
@@ -58,7 +58,7 @@ everything below:
   enumerate, "did not grow" verdicts you did not spot-check.
 
 Corpus grounding (charter §0 — read the file, citing it is not reading it):
-`claude/rules/corpus/reference_review_patterns.md` (P1–P42; especially **P13, P22, P39**).
+`{{BOT_RULES}}/corpus/reference_review_patterns.md` (P1–P42; especially **P13, P22, P39**).
 
 ## Changed-surface traversal (before the checklist)
 
@@ -114,7 +114,7 @@ Every allowlisted violation's `# FIXME(#<n>)` must reference a GH issue/PR numbe
 the `#gh-issue` placeholder. Flag only the ones the DIFF adds; pre-existing ones are debt.
 - Repro: run the harness detector by absolute main-checkout path (charter §2 gotcha 9,
   reviewer-tooling §H), then intersect its hits with the diff:
-  `python3 <main-checkout>/.claude/rules/private/detectors/fixme_format.py src tests`
+  `python3 <main-checkout>/{{BOT_RULES}}/detectors/fixme_format.py src tests`
   and `git diff main...HEAD | grep -iE '^\+.*FIXME\('`
 
 ### RA-5 — No pattern-match against allowlisted code  [P13, P25, P39]

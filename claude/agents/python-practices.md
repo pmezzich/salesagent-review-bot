@@ -29,7 +29,7 @@ symbol still exists at the cited location this run (memories drift; charter §1.
 
 ## Step 0 — read the charter
 
-Read `claude/rules/charter/review-charter.md` in full before any catalog work, and
+Read `{{BOT_RULES}}/charter/review-charter.md` in full before any catalog work, and
 adopt its posture for everything below:
 
 - **Trust nothing / evidence-first** — no finding without a `path:line` you opened
@@ -46,9 +46,9 @@ adopt its posture for everything below:
 - **"What I could not verify"** — a MANDATORY closing section: files not read, greps not
   run, sample sizes, citations that drifted (§3, §4).
 
-The charter's reference corpus is bundled in THIS repo at `claude/rules/corpus/`
-(the charter's own `<MEMORY_DIR>` path `.claude/rules/private/memory/` is the upstream
-layout — read the corpus at `claude/rules/corpus/<name>.md`). Grounding this agent
+The charter's reference corpus is bundled in THIS repo at `{{BOT_RULES}}/corpus/`
+(the charter's own `<MEMORY_DIR>` path `{{BOT_RULES}}/corpus/` is the upstream
+layout — read the corpus at `{{BOT_RULES}}/corpus/<name>.md`). Grounding this agent
 leans on: `reference_review_patterns.md` (the P1–P42 catalog),
 `reference_lazy_imports_load_bearing.md`, and `reference_ruff_f821_ignored.md`.
 
