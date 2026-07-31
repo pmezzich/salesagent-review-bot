@@ -76,12 +76,12 @@ def main() -> int:
     stale = []
     for name, uv, args in DETECTORS:
         r = _run(name, uv, args)
-        out = r.stdout + r.stderr
+        out = (r.stdout or "") + (r.stderr or "")
         is_stale = "WARNING" in out and "stale" in out.lower()
         if is_stale:
             stale.append(name)
         tag = "STALE" if is_stale else "ctx "
-        print(f"  {tag} {name}: {_headline(r.stdout)}")
+        print(f"  {tag} {name}: {_headline(r.stdout or '')}")
 
     print("\n── summary ──")
     if stale:
