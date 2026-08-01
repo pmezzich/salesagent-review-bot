@@ -41,7 +41,7 @@ DETECTORS = [
 
 def _run(name: str, uv: bool, args: list[str]) -> subprocess.CompletedProcess:
     cmd = (["uv", "run", "python"] if uv else [sys.executable]) + [str(HERE / f"{name}.py"), *args]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def _headline(out: str) -> str:
@@ -53,7 +53,7 @@ def main() -> int:
         pin = subprocess.run(
             ["uv", "run", "python", "-c",
              "import adcp; print(adcp.get_adcp_sdk_version(), adcp.get_adcp_spec_version())"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         ).stdout.strip()
     except Exception:
         pin = ""

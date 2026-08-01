@@ -53,12 +53,24 @@ Run the mechanized detectors in
 [`{{BOT_RULES}}/detectors/`]({{BOT_RULES}}/detectors/) against the pinned checkout. They are
 the floor beneath LLM judgment — each catches a defect class a green `make quality`
 provably misses. **They live outside the target tree, so invoke by ABSOLUTE path with
-`cwd` = the worktree**, and scope to the diff with `--base origin/main`:
+`cwd` = the worktree**:
 
 ```bash
-# from the PR's pinned worktree, for each detector:
-python {{BOT_RULES}}/detectors/<name>.py --base origin/main
+# from the PR's pinned worktree (cwd = the checkout), for each detector.
+# Use `uv run python`, NOT bare `python`: uv run guarantees a real interpreter AND makes
+# adcp/src importable for the SDK-grounded detectors (recovery_audit, sdk_spec_drift,
+# suggestion_audit). Bare `python` on Windows is the Microsoft Store shim — it prints
+# "Python was not found" and runs nothing; `python3` works for the non-adcp detectors only.
+uv run python {{BOT_RULES}}/detectors/<name>.py --base <PR-base-sha>
 ```
+
+**Scope caveat — do NOT pass a bare `--base origin/main`.** On a fork checkout, `origin`
+is the contributor's fork and `origin/main` is often stale, so `origin/main...HEAD` balloons
+to hundreds of unrelated files. Pass the PR's real base: the SHA the manifest built the diff
+from (`merge-base(<upstream>/main, HEAD)`), or scope the diff-based detectors to the manifest's
+`changed_files`. `bump_check` needs no `--base` (it is a repo-wide freshness gate). Run it once
+via `uv run python {{BOT_RULES}}/detectors/bump_check.py` first; exit 2 there means the SDK
+snapshots are stale and the SDK-grounded scans below cannot be trusted.
 
 Exit taxonomy: **2 = tool/snapshot broken — do NOT trust** (fix the pin; run
 `bump_check.py`; the SDK-snapshot detectors hard-fail when the installed `adcp` pin ≠

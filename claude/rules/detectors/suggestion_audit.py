@@ -45,7 +45,7 @@ try: _s.stdout.reconfigure(encoding="utf-8", errors="replace"); _s.stderr.reconf
 except Exception: pass
 
 import json
-import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -153,21 +153,33 @@ def _load_class_rows() -> list[tuple[str, str, str]]:
 
 
 def _load_enum() -> dict[str, str]:
-    meta = json.loads((Path.cwd() / _ENUM_REL).read_text())["enumMetadata"]
+    meta = json.loads((Path.cwd() / _ENUM_REL).read_text(encoding="utf-8"))["enumMetadata"]
     return {c: e["suggestion"] for c, e in meta.items() if isinstance(e, dict) and e.get("suggestion")}
 
 
-def _has_wire_oracle(code: str) -> bool:
-    """True if some test grounds this code's wire suggestion in the spec SSOT.
+def _oracled_codes() -> set[str]:
+    """Every code with a ``pinned_error_code_suggestion("CODE")`` wire oracle under
+    tests/, collected in ONE native-Python working-tree walk (no subprocess).
 
-    Searches the working tree (not the git index) so uncommitted oracles count.
+    This replaces a per-code ``grep -rll`` (one recursive scan of the whole tests/ tree
+    for EACH grounded constant — O(codes x tree)). A spawned ``grep`` is also the wrong
+    primitive here: invoking the Git-Bash ``grep`` from a native-Windows Python
+    interpreter carries heavy per-process path-translation overhead, so even a single
+    recursive grep over a large tests/ tree runs ~30s (measured), while a native
+    ``rglob`` over the same 888 files is sub-second. Reads each file once, no process
+    spawn. Working tree (not the git index), so uncommitted oracles count.
     """
-    out = subprocess.run(
-        ["grep", "-rll", f'pinned_error_code_suggestion("{code}")', "tests"],
-        capture_output=True,
-        text=True,
-    )
-    return bool(out.stdout.strip())
+    pat = re.compile(r'pinned_error_code_suggestion\("([^"]*)"\)')
+    codes: set[str] = set()
+    tests = Path.cwd() / "tests"
+    if not tests.is_dir():
+        return codes
+    for f in tests.rglob("*.py"):
+        try:
+            codes.update(pat.findall(f.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    return codes
 
 
 def selftest() -> int:
@@ -220,7 +232,8 @@ def main(argv: list[str]) -> int:
 
     c_grounded, c_cross, c_diverge, c_unground = audit(consts, enum_sugg)
     _, k_cross, k_diverge, k_unground = audit_class_defaults(class_rows, enum_sugg)
-    no_oracle = [(name, code) for name, code, _ in c_grounded if not _has_wire_oracle(code)]
+    oracled = _oracled_codes()
+    no_oracle = [(name, code) for name, code, _ in c_grounded if code not in oracled]
 
     findings = c_cross or c_diverge or c_unground or no_oracle or k_cross or k_diverge or k_unground
     if not findings:

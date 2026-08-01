@@ -208,7 +208,7 @@ def _changed_files(base: str) -> set[str] | None:
     try:
         out = subprocess.run(
             ["git", "diff", "--name-only", f"{base}...HEAD"],
-            capture_output=True, text=True, timeout=30, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=True,
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return None

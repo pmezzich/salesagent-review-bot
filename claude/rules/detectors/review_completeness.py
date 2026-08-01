@@ -48,7 +48,7 @@ from typing import Any
 
 def _gh_json(args: list[str]) -> Any:
     try:
-        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+        out = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
         print(f"gh invocation failed: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -66,7 +66,7 @@ def _resolve_since(since: str | None) -> str | None:
         return since
     # treat as a git SHA
     out = subprocess.run(
-        ["git", "show", "-s", "--format=%cI", since], capture_output=True, text=True
+        ["git", "show", "-s", "--format=%cI", since], capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     if out.returncode != 0:
         print(f"could not resolve --since {since!r} as a SHA; pass an ISO timestamp", file=sys.stderr)
@@ -79,11 +79,11 @@ def _head_delta(stamped: str, live: str) -> str:
     live head — the diff a head-advance verdict must reckon with. Falls back to a
     fetch-and-diff instruction when the SHAs are not in the local clone."""
     rng = f"{stamped}..{live}"
-    log = subprocess.run(["git", "log", "--oneline", rng], capture_output=True, text=True)
+    log = subprocess.run(["git", "log", "--oneline", rng], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if log.returncode != 0:
         return (f"    (cannot diff {rng} locally — fetch the PR head, then:\n"
                 f"       git log --oneline {rng} && git diff --stat {rng})")
-    stat = subprocess.run(["git", "diff", "--stat", rng], capture_output=True, text=True)
+    stat = subprocess.run(["git", "diff", "--stat", rng], capture_output=True, text=True, encoding="utf-8", errors="replace")
     commits = log.stdout.strip() or "(no commits in range — force-push or rebase? re-fetch and re-check)"
     lines = [f"      {ln}" for ln in commits.splitlines()]
     lines += ["    files changed:"] + [f"      {ln}" for ln in stat.stdout.strip().splitlines()]

@@ -68,7 +68,7 @@ def derive_pins() -> tuple[str, str]:
         out = subprocess.run(
             ["uv", "run", "python", "-c",
              "import adcp; print(adcp.get_adcp_spec_version()); print(adcp.get_adcp_sdk_version())"],
-            capture_output=True, text=True, timeout=90,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
         )
         lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
         if len(lines) >= 2 and SPEC_TOKEN.fullmatch(lines[-2]) and SPEC_TOKEN.fullmatch(lines[-1]):
@@ -78,13 +78,13 @@ def derive_pins() -> tuple[str, str]:
     spec = ""
     guard = Path("tests/unit/test_adcp_spec_version.py")
     if guard.exists():
-        m = re.search(r'EXPECTED_SPEC_VERSION\s*=\s*"([^"]+)"', guard.read_text())
+        m = re.search(r'EXPECTED_SPEC_VERSION\s*=\s*"([^"]+)"', guard.read_text(encoding="utf-8", errors="replace"))
         if m:
             spec = m.group(1)
     sdk = ""
     pyproject = Path("pyproject.toml")
     if pyproject.exists():
-        m = re.search(r'adcp==([\d.]+(?:-\w+(?:\.\d+)?)?)', pyproject.read_text())
+        m = re.search(r'adcp==([\d.]+(?:-\w+(?:\.\d+)?)?)', pyproject.read_text(encoding="utf-8", errors="replace"))
         if m:
             sdk = m.group(1)
     return spec, sdk
@@ -125,7 +125,7 @@ def scan(roots: list[Path], spec_pin: str, sdk_pin: str) -> list[tuple[Path, int
             if f.resolve() == self_path:  # never flag our own fixtures/comments
                 continue
             try:
-                text = f.read_text(errors="ignore")
+                text = f.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 continue
             for i, line in enumerate(text.splitlines(), start=1):
