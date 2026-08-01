@@ -1,0 +1,11 @@
+# Keep every text file LF on checkout across platforms. The drivers under bin/
+# and install.sh are `#!/usr/bin/env bash` scripts — a CRLF checkout (Windows
+# autocrlf) breaks the shebang on Unix and the symlink install path. Pinning LF
+# repo-wide keeps the shipped tool identical on macOS/Linux/Windows-Git-Bash.
+* text=auto eol=lf
+
+# Anything genuinely binary should be marked so it is never normalized.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

@@ -32,7 +32,9 @@
 #                        Defaults to the newest run. Pass --open to open it.
 #   clean                Remove driver-owned checkouts and prune worktrees.
 #
-# Requires: gh (authenticated), git, python3, jq.
+# Requires: gh (authenticated), git, and a Python 3 (python3 / python / py -3).
+# No `jq` binary: gh's built-in --jq (gojq) filters gh output, and Python builds
+# every JSON payload. Set PR_REVIEW_PYTHON to force a specific interpreter.
 
 set -euo pipefail
 
@@ -59,6 +61,33 @@ WT_PREFIX="$(basename "$ROOT")-pr"
 
 log() { printf '  %s\n' "$*" >&2; }
 die() { printf 'pr-review-queue: %s\n' "$*" >&2; exit 1; }
+
+# ── Python interpreter detection ──────────────────────────────────────────────
+# JSON construction (manifest, review payload) is Python's job — the one hard
+# runtime dependency besides gh/git. On Windows the bare name `python` is often
+# the Microsoft Store shim: it prints "Python was not found" and exits non-zero
+# WITHOUT running anything, so a naive `command -v python` check passes while the
+# interpreter is a no-op. Probe by actually EXECUTING a marker; only a real
+# Python 3 prints it. PY is an ARRAY so a multi-word launcher ("py -3") or a
+# spaced path both survive quoting. Set PR_REVIEW_PYTHON to override.
+PY=()
+_py_works() {  # _py_works <cmd...> — true only if <cmd> runs and is Python 3
+  "$@" -c 'import sys; sys.stdout.write("PYOK%d" % sys.version_info[0])' 2>/dev/null | grep -q '^PYOK3$'
+}
+detect_py() {
+  if [ -n "${PR_REVIEW_PYTHON:-}" ]; then
+    # Allow a multi-word override (e.g. "py -3") by word-splitting it once.
+    # shellcheck disable=SC2206
+    local -a cand=(${PR_REVIEW_PYTHON})
+    _py_works "${cand[@]}" || die "PR_REVIEW_PYTHON='${PR_REVIEW_PYTHON}' is not a working Python 3"
+    PY=("${cand[@]}"); return
+  fi
+  if   _py_works python3; then PY=(python3)
+  elif _py_works python;  then PY=(python)
+  elif _py_works py -3;   then PY=(py -3)
+  else die "no working Python 3 found (tried python3, python, py -3; set PR_REVIEW_PYTHON)"
+  fi
+}
 
 # ── candidate discovery ───────────────────────────────────────────────────────
 # Parse pr-radar's plain-text (ANSI-stripped when piped) actionable buckets into a
@@ -110,29 +139,31 @@ pr_reviewable() {
 
 # ── prior-comment capture ─────────────────────────────────────────────────────
 # Human review context the synthesis agent must weigh: issue comments, review
-# summaries, and inline review comments. Bots filtered out.
+# summaries, and inline review comments. Bots filtered out. The jq expressions run
+# inside gh via --jq (gojq — gh's built-in jq engine), applied per page under
+# --paginate, so no external jq binary is needed.
 capture_prior_comments() {
   local pr="$1" out="$2"
   {
     echo "# Prior human review history for PR #${pr}"
     echo
     echo "## Review summaries (APPROVED / CHANGES_REQUESTED / COMMENTED)"
-    gh api "repos/${REPO}/pulls/${pr}/reviews" --paginate 2>/dev/null | jq -r '
+    gh api "repos/${REPO}/pulls/${pr}/reviews" --paginate --jq '
       .[] | select(.user.type != "Bot")
       | "- [\(.state)] @\(.user.login) (\(.submitted_at // "?")):\n\((.body // "") | gsub("\n";"\n  ") | "  " + .)"
-    ' || true
+    ' 2>/dev/null || true
     echo
     echo "## Inline review comments (file:line threads)"
-    gh api "repos/${REPO}/pulls/${pr}/comments" --paginate 2>/dev/null | jq -r '
+    gh api "repos/${REPO}/pulls/${pr}/comments" --paginate --jq '
       .[] | select(.user.type != "Bot")
       | "- @\(.user.login) on \(.path):\(.line // .original_line // "?"):\n  \((.body // "") | gsub("\n";"\n  "))"
-    ' || true
+    ' 2>/dev/null || true
     echo
     echo "## Issue-level conversation comments"
-    gh api "repos/${REPO}/issues/${pr}/comments" --paginate 2>/dev/null | jq -r '
+    gh api "repos/${REPO}/issues/${pr}/comments" --paginate --jq '
       .[] | select(.user.type != "Bot")
       | "- @\(.user.login) (\(.created_at)):\n  \((.body // "") | gsub("\n";"\n  "))"
-    ' || true
+    ' 2>/dev/null || true
   } > "$out"
 }
 
@@ -142,15 +173,17 @@ prepare_pr() {
   local dir="${run_dir}/pr${pr}"
   mkdir -p "$dir"
 
+  # One gh call; gh's --jq (gojq) emits the fields we need as a single TSV line.
+  # @tsv escapes any tab/newline WITHIN a field, so the delimiter tabs are
+  # unambiguous and `read` splits cleanly.
   local meta
   meta="$(gh pr view "$pr" --repo "$REPO" \
     --json number,title,url,headRefName,headRefOid,baseRefName,isCrossRepository,author \
+    --jq '[.headRefOid, .title, .url, .baseRefName] | @tsv' \
     2>/dev/null)" || die "PR #${pr}: gh pr view failed"
   local head_sha title url base
-  head_sha="$(jq -r .headRefOid <<<"$meta")"
-  title="$(jq -r .title <<<"$meta")"
-  url="$(jq -r .url <<<"$meta")"
-  base="$(jq -r .baseRefName <<<"$meta")"
+  IFS=$'\t' read -r head_sha title url base <<<"$meta"
+  [ -n "$head_sha" ] || die "PR #${pr}: could not read head SHA from gh"
 
   log "PR #${pr} — ${title}"
 
@@ -175,7 +208,24 @@ prepare_pr() {
   # Tree context for sibling greps only — scope is the local git diff above.
   local checkout="${WT_BASE}/${WT_PREFIX}${pr}"
   local branch="pr-${pr}-review"
-  if git -C "$ROOT" worktree list --porcelain | grep -qx "worktree ${checkout}"; then
+
+  # Is $checkout already a worktree of THIS repo? Match by same-file (-ef), NOT by
+  # string: on Git Bash `git worktree list` prints Windows-form paths
+  # (C:/Users/…) while the shell builds MSYS-form (/c/Users/…), so a string
+  # compare never matches an existing worktree on Windows and every reused
+  # worktree is misread as "not a worktree". `-ef` stats both sides and compares
+  # device+inode, so it is path-form- and case-agnostic on every OS.
+  local existing_wt="" _wtline _wt
+  while IFS= read -r _wtline; do
+    case "$_wtline" in
+      "worktree "*)
+        _wt="${_wtline#worktree }"
+        if [ "$_wt" -ef "$checkout" ] 2>/dev/null; then existing_wt="$_wt"; break; fi
+        ;;
+    esac
+  done < <(git -C "$ROOT" worktree list --porcelain)
+
+  if [ -n "$existing_wt" ]; then
     # The review agents grep this LOCAL tree, so it must match the exact SHA the
     # diff above was built from ($fetched) — worktree ≡ diff scope, one snapshot.
     # These worktrees are disposable: bring the tree to the PR head. A plain lag
@@ -193,22 +243,30 @@ prepare_pr() {
     die "PR #${pr}: ${checkout} exists but is not a git worktree; refusing to clobber"
   else
     # None yet — create it their way (branch pr-<NNNN>-review at the PR head).
+    # `|| die` so a failed add (e.g. the branch is already checked out by another
+    # worktree when WT_BASE points away from it) skips the PR LOUDLY rather than
+    # emitting a manifest entry whose `checkout` names a tree that was never made.
     if git -C "$ROOT" show-ref -q --verify "refs/heads/${branch}"; then
-      git -C "$ROOT" worktree add -q "$checkout" "$branch"
+      git -C "$ROOT" worktree add -q "$checkout" "$branch" \
+        || die "PR #${pr}: 'git worktree add ${checkout}' failed (branch ${branch} in use elsewhere?)"
     else
-      git -C "$ROOT" worktree add -q -b "$branch" "$checkout" "$fetched"
+      git -C "$ROOT" worktree add -q -b "$branch" "$checkout" "$fetched" \
+        || die "PR #${pr}: 'git worktree add -b ${branch} ${checkout}' failed"
     fi
   fi
 
-  jq -n \
-    --arg pr "$pr" --arg title "$title" --arg url "$url" \
-    --arg base "$base" --arg head "$head_sha" \
-    --arg dir "$dir" --arg checkout "$checkout" \
-    '{pr:($pr|tonumber), title:$title, url:$url, base:$base, head:$head,
-      review_dir:$dir, checkout:$checkout,
-      diff:($dir+"/pr.diff"), changed_files:($dir+"/changed-files.txt"),
-      prior_comments:($dir+"/prior-comments.md"),
-      draft:($dir+"/DRAFT-COMMENT.md")}'
+  # Emit the manifest entry as JSON (Python does the escaping — titles carry
+  # quotes/backslashes). Values arrive as argv, so no shell-quoting hazard.
+  "${PY[@]}" - "$pr" "$title" "$url" "$base" "$head_sha" "$dir" "$checkout" <<'PY'
+import json, sys
+pr, title, url, base, head, d, checkout = sys.argv[1:8]
+print(json.dumps({
+    "pr": int(pr), "title": title, "url": url, "base": base, "head": head,
+    "review_dir": d, "checkout": checkout,
+    "diff": d + "/pr.diff", "changed_files": d + "/changed-files.txt",
+    "prior_comments": d + "/prior-comments.md", "draft": d + "/DRAFT-COMMENT.md",
+}))
+PY
 }
 
 cmd_manifest() {
@@ -223,25 +281,33 @@ cmd_manifest() {
   run_dir="${BASE_DIR}/queue/${stamp}"
   mkdir -p "$run_dir"
 
-  local entries="[]" reviewed=0 skipped=""
+  local -a entry_json=()
+  local reviewed=0 skipped=""
   for pr in "${prs[@]}"; do
     pr_reviewable "$pr" || continue
     # prepare_pr runs in a subshell; a `die` inside it exits only that subshell
-    # (empty stdout, non-zero status). Capture and check so a failed PR is skipped
-    # LOUDLY rather than silently dropped while the count marches on.
-    local entry; entry="$(prepare_pr "$pr" "$run_dir")"
-    if [ $? -ne 0 ] || [ -z "$entry" ]; then
+    # (empty stdout, non-zero status). The `&& / ||` capture keeps set -e from
+    # aborting the loop, so a failed PR is skipped LOUDLY, not silently dropped.
+    local entry rc=0
+    entry="$(prepare_pr "$pr" "$run_dir")" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$entry" ]; then
       log "skip #${pr}: preparation failed (see error above) — dropped from manifest"
       skipped+=" ${pr}"
       continue
     fi
-    entries="$(jq -c --argjson e "$entry" '. += [$e]' <<<"$entries")"
+    entry_json+=("$entry")
     reviewed=$((reviewed + 1))
   done
   [ -n "$skipped" ] && log "NOTE: skipped PRs (not in manifest):${skipped}"
   [ "$reviewed" -gt 0 ] || die "no reviewable PRs (all candidates were CONFLICTING or failed preparation)"
-  jq -n --arg run "$run_dir" --argjson prs "$entries" '{run_dir:$run, prs:$prs}' \
-    | tee "${run_dir}/manifest.json"
+
+  # Assemble {run_dir, prs:[entry,...]} from the collected entry JSONs.
+  "${PY[@]}" - "$run_dir" "${entry_json[@]}" <<'PY' | tee "${run_dir}/manifest.json"
+import json, sys
+run = sys.argv[1]
+prs = [json.loads(e) for e in sys.argv[2:]]
+print(json.dumps({"run_dir": run, "prs": prs}, indent=2))
+PY
   log "manifest -> ${run_dir}/manifest.json (${reviewed} reviewable)"
 }
 
@@ -265,21 +331,24 @@ cmd_post() {
   local draft="${dir}/DRAFT-COMMENT.md" inline="${dir}/REVIEW-INLINE.json" diff="${dir}/pr.diff"
   [ -s "$draft" ] || die "no DRAFT-COMMENT.md at ${draft}"
 
-  # No inline comments -> plain top-level review comment (legacy shape).
-  if [ ! -s "$inline" ] || [ "$(jq 'length' "$inline" 2>/dev/null || echo 0)" = "0" ]; then
-    if [ "$preview" = 1 ]; then log "[preview] top-level comment to PR #${pr}:"; cat "$draft"; return; fi
-    log "posting top-level review comment to PR #${pr}"
-    gh pr comment "$pr" --repo "$REPO" --body-file "$draft"
-    return
-  fi
-
-  # Inline path: keep only comments whose (path,line) is a '+'/context line in the diff.
-  local filtered
-  filtered="$(python3 - "$diff" "$inline" <<'PY'
+  # Build the review payload in one Python pass: keep only inline comments whose
+  # (path,line) is a '+'/context line in pr.diff, dropping out-of-diff anchors
+  # (GitHub 422s the whole review otherwise; drops go to stderr). Emits the kept
+  # count on line 1, then the {event,body,comments} payload JSON. count=0 => no
+  # valid anchors => fall back to a top-level comment.
+  local out n payload
+  out="$("${PY[@]}" - "$diff" "$inline" "$draft" <<'PY'
 import json, re, sys
-diff_path, inline_path = sys.argv[1], sys.argv[2]
+diff_path, inline_path, draft_path = sys.argv[1], sys.argv[2], sys.argv[3]
+# Files are UTF-8 (git diff, the synthesis agent's markdown/JSON). Windows Python
+# defaults to cp1252, which mojibakes em-dashes / arrows / smart quotes straight
+# into the posted GitHub body — pin UTF-8 on every read.
 valid, path, newln = set(), None, 0
-for line in open(diff_path, errors="replace"):
+try:
+    dh = open(diff_path, encoding="utf-8", errors="replace")
+except OSError:
+    dh = []
+for line in dh:
     if line.startswith('+++ '):
         p = line[4:].rstrip('\n')
         path = p[2:] if p.startswith('b/') else (None if p == '/dev/null' else p)
@@ -295,25 +364,41 @@ for line in open(diff_path, errors="replace"):
         pass
     elif line.startswith(' '):
         valid.add((path, newln)); newln += 1
-comments = json.load(open(inline_path))
+try:
+    comments = json.load(open(inline_path, encoding="utf-8"))
+except (OSError, ValueError):
+    comments = []
 keep, drop = [], []
-for c in comments:
+for c in (comments or []):
     if (c.get('path'), c.get('line')) in valid:
         keep.append({'path': c['path'], 'line': c['line'], 'side': 'RIGHT', 'body': c['body']})
     else:
         drop.append(c)
 for d in drop:
     sys.stderr.write(f"  drop inline (line not in diff): {d.get('path')}:{d.get('line')}\n")
-json.dump(keep, sys.stdout)
+body = open(draft_path, encoding="utf-8", errors="replace").read()
+sys.stdout.write(str(len(keep)) + "\n")
+sys.stdout.write(json.dumps({"event": "COMMENT", "body": body, "comments": keep}))
 PY
-)"
-  local n payload
-  n="$(jq 'length' <<<"$filtered")"
-  payload="$(jq -n --arg body "$(cat "$draft")" --argjson comments "$filtered" \
-    '{event:"COMMENT", body:$body, comments:$comments}')"
+)" || die "PR #${pr}: failed to build review payload"
+  n="${out%%$'\n'*}"       # line 1 = kept inline count
+  payload="${out#*$'\n'}"  # remainder = payload JSON (may contain newlines)
+
+  # No valid inline anchors -> plain top-level review comment (legacy shape).
+  if [ "$n" = "0" ]; then
+    if [ "$preview" = 1 ]; then log "[preview] top-level comment to PR #${pr}:"; cat "$draft"; return; fi
+    log "posting top-level review comment to PR #${pr}"
+    gh pr comment "$pr" --repo "$REPO" --body-file "$draft"
+    return
+  fi
+
   if [ "$preview" = 1 ]; then
     log "[preview] review to PR #${pr}: body + ${n} inline comment(s) at:"
-    jq -r '.comments[] | "    \(.path):\(.line)"' <<<"$payload" >&2
+    printf '%s' "$payload" | "${PY[@]}" -c '
+import json, sys
+for c in json.load(sys.stdin)["comments"]:
+    sys.stderr.write("    %s:%s\n" % (c["path"], c["line"]))
+'
     printf '%s\n' "$payload"
     return
   fi
@@ -354,7 +439,7 @@ Read FINDINGS.md and pr.diff first, then the review-*.md for any finding I ask
 about. Review scope is the diff only. Project bars: DRY violations and missing
 test coverage are BLOCKING; unit tests are not accepted as functional proof —
 wired BDD across all four transports is the bar; guard allowlists may only
-shrink. Ground spec claims against the pinned AdCP 3.1.0-beta.3 (docs/adcp-spec-version.md).
+shrink. Ground spec claims against the pinned AdCP version (docs/adcp-spec-version.md).
 Do not post anything to GitHub. Wait for my direction on what to poke at or fix.
 EOF
 }
@@ -379,6 +464,9 @@ cmd_clean() {
 
 main() {
   local sub="${1:-}"; shift || true
+  # manifest/post build+read JSON via Python; resolve the interpreter for those two
+  # only (clean/artifact/hydrate need no Python and must not be gated on it).
+  case "$sub" in manifest|post) detect_py;; esac
   case "$sub" in
     manifest) cmd_manifest "$@";;
     post)     cmd_post "$@";;
