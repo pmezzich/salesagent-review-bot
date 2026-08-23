@@ -59,6 +59,19 @@ PR_REVIEW_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/pr-review-queue/config"
 WT_BASE="${PR_REVIEW_WT_BASE:-${HOME}/projects}"
 WT_PREFIX="$(basename "$ROOT")-pr"
 
+# Git for Windows resolves a POSIX path like /c/Users/... RELATIVE TO THE CURRENT
+# DRIVE whenever MSYS path conversion is off -- which happens whenever the caller
+# exports MSYS_NO_PATHCONV=1 (a common workaround for git mangling <rev>:<path>
+# arguments). "git worktree add /c/Users/me/projects/x" then silently creates the
+# tree under a doubled C:/c/Users/... prefix, and "git worktree list" cheerfully
+# reports the bogus tree as healthy -- so the failure surfaces much later, as a
+# "No such file or directory" from whatever was handed the manifest path.
+# Normalise to a mixed path (C:/Users/...) that bash and git.exe read identically,
+# so the driver does not depend on the caller's MSYS settings.
+norm_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
 log() { printf '  %s\n' "$*" >&2; }
 die() { printf 'pr-review-queue: %s\n' "$*" >&2; exit 1; }
 
@@ -206,7 +219,7 @@ prepare_pr() {
 
   # Sibling worktree at ${WT_BASE}/<repo>-pr<NNNN> on branch pr-<NNNN>-review.
   # Tree context for sibling greps only — scope is the local git diff above.
-  local checkout="${WT_BASE}/${WT_PREFIX}${pr}"
+  local checkout; checkout="$(norm_path "${WT_BASE}/${WT_PREFIX}${pr}")"
   local branch="pr-${pr}-review"
 
   # Is $checkout already a worktree of THIS repo? Match by same-file (-ef), NOT by
